@@ -1,0 +1,10 @@
+{
+  "name": "ChimeVault Connect - Banking RTC & CRM SDK",
+  "description": "Amazon Chime SDK powered real-time meetings, audio/video calling, messaging, PSTN voice dialer, media pipelines, and ML intelligence for banking and CRM.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "display-capture"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

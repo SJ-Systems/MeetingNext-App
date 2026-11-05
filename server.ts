@@ -1,0 +1,859 @@
+import express, { Request, Response } from 'express';
+import { createServer as createViteServer } from 'vite';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
+import { db } from './src/db/inMemoryDb';
+import { meetingNextBackend } from './src/db/meetingNextBackend';
+import { redactFinancialPII } from './src/utils/speechRecognition';
+
+dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+async function startServer() {
+  const app = express();
+  app.use(express.json());
+
+  // Session Token & Authentication Context Middleware
+  app.use((req: Request, _res: Response, next) => {
+    const authHeader = req.headers.authorization;
+    const sessionToken = req.headers['x-session-token'] as string;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : sessionToken;
+
+    if (token) {
+      // Keep session alive for Sarthak Jain, CFA
+      const currentUser = meetingNextBackend.getCurrentUser();
+      if (!currentUser) {
+        meetingNextBackend.login('sarthak.jain@businessnext.com', 'Sarthak@2026');
+      }
+    }
+    next();
+  });
+  // REST API Routes - Section 13 API Design
+  // ---------------------------------------------------------------------------
+
+  // Health check
+  app.get('/api/health', (_req: Request, res: Response) => {
+    res.json({
+      status: 'healthy',
+      service: 'CRMNEXT Communication & AI Meeting Platform',
+      timestamp: new Date().toISOString(),
+      awsChimeConnected: true,
+      amazonConnectProvisioned: true,
+    });
+  });
+
+  // 1. Dashboard Metrics
+  app.get('/api/dashboard/metrics', (_req: Request, res: Response) => {
+    try {
+      const metrics = db.getDashboardMetrics();
+      res.json(metrics);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 2. Customers
+  app.get('/api/customers', (_req: Request, res: Response) => {
+    res.json(db.getCustomers());
+  });
+
+  app.get('/api/customers/:id', (req: Request, res: Response) => {
+    const customer = db.getCustomerById(req.params.id);
+    if (!customer) {
+      return res.status(404).json({ error: 'Customer not found' });
+    }
+    res.json(customer);
+  });
+
+  app.put('/api/customers/:id/notes', (req: Request, res: Response) => {
+    const { notes } = req.body;
+    db.updateCustomerNotes(req.params.id, notes || '');
+    res.json({ success: true, customerId: req.params.id, notes });
+  });
+
+  // 3. Relationship Managers
+  app.get('/api/rms', (_req: Request, res: Response) => {
+    res.json(db.getRMs());
+  });
+
+  // 4. Meeting Management
+  // GET /api/meetings
+  app.get('/api/meetings', (req: Request, res: Response) => {
+    const { status, rmId, customerId } = req.query;
+    let meetings = db.getMeetings();
+
+    if (status) {
+      meetings = meetings.filter((m) => m.status === status);
+    }
+    if (rmId) {
+      meetings = meetings.filter((m) => m.rmId === rmId);
+    }
+    if (customerId) {
+      meetings = meetings.filter((m) => m.customerId === customerId);
+    }
+
+    res.json(meetings);
+  });
+
+  // GET /api/meetings/:id
+  app.get('/api/meetings/:id', (req: Request, res: Response) => {
+    const meeting = db.getMeetingById(req.params.id);
+    if (!meeting) {
+      return res.status(404).json({ error: 'Meeting not found' });
+    }
+    res.json(meeting);
+  });
+
+  // POST /api/meetings
+  app.post('/api/meetings', (req: Request, res: Response) => {
+    const {
+      title,
+      description,
+      agenda,
+      meetingType,
+      customerId,
+      customerName,
+      customerEmail,
+      customerPhone,
+      rmId,
+      rmName,
+      scheduledDate,
+      startTime,
+      endTime,
+      durationMinutes,
+      associatedTicketId,
+      reminderPreferences,
+    } = req.body;
+
+    if (!title || !customerId || !rmId || !scheduledDate || !startTime) {
+      return res.status(400).json({ error: 'Missing required meeting scheduling fields' });
+    }
+
+    // Check RM scheduling conflicts
+    const conflict = db.checkSchedulingConflict(rmId, scheduledDate, startTime, endTime || startTime);
+    if (conflict) {
+      return res.status(409).json({
+        error: 'Scheduling conflict detected: The selected Relationship Manager already has an active meeting during this timeslot.',
+        conflict: true,
+      });
+    }
+
+    const newMeeting = db.createMeeting({
+      title,
+      description: description || '',
+      agenda: agenda || '',
+      meetingType: meetingType || 'video',
+      status: 'scheduled',
+      customerId,
+      customerName: customerName || 'Customer',
+      customerEmail: customerEmail || '',
+      customerPhone: customerPhone || '',
+      rmId,
+      rmName: rmName || 'Relationship Manager',
+      scheduledDate,
+      startTime,
+      endTime: endTime || startTime,
+      durationMinutes: durationMinutes || 30,
+      chimeMeetingId: `meet-chime-apex-${Math.floor(1000 + Math.random() * 9000)}`,
+      attendees: [
+        {
+          id: `att_rm_${Date.now()}`,
+          name: rmName || 'Relationship Manager',
+          email: customerEmail || '',
+          role: 'organizer',
+          avatar: 'RM',
+        },
+        {
+          id: `att_cust_${Date.now()}`,
+          name: customerName || 'Customer',
+          email: customerEmail || '',
+          role: 'customer',
+          avatar: 'C',
+        },
+      ],
+      reminderPreferences: reminderPreferences || {
+        email: true,
+        sms: true,
+        timeBeforeMinutes: 15,
+      },
+      associatedTicketId,
+    });
+
+    res.status(201).json(newMeeting);
+  });
+
+  // PUT /api/meetings/:id
+  app.put('/api/meetings/:id', (req: Request, res: Response) => {
+    const updated = db.updateMeeting(req.params.id, req.body);
+    if (!updated) {
+      return res.status(404).json({ error: 'Meeting not found' });
+    }
+    res.json(updated);
+  });
+
+  // DELETE /api/meetings/:id
+  app.delete('/api/meetings/:id', (req: Request, res: Response) => {
+    const success = db.deleteMeeting(req.params.id);
+    if (!success) {
+      return res.status(404).json({ error: 'Meeting not found' });
+    }
+    res.json({ success: true, deletedMeetingId: req.params.id });
+  });
+
+  // 5. Meeting Execution (Chime SDK lifecycle)
+  // POST /api/meetings/:id/join
+  app.post('/api/meetings/:id/join', (req: Request, res: Response) => {
+    const meeting = db.getMeetingById(req.params.id);
+    if (!meeting) {
+      return res.status(404).json({ error: 'Meeting not found' });
+    }
+
+    // Update status to in_progress if currently scheduled
+    if (meeting.status === 'scheduled') {
+      db.updateMeeting(meeting.id, {
+        status: 'in_progress',
+        actualStartTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      });
+    }
+
+    // Return Amazon Chime SDK Join Credentials
+    res.json({
+      meetingId: meeting.id,
+      chimeMeeting: {
+        MeetingId: meeting.chimeMeetingId || `meet-chime-${meeting.id}`,
+        ExternalMeetingId: meeting.internalReference,
+        MediaRegion: 'us-east-1',
+        MediaPlacement: {
+          AudioHostUrl: 'audio.chime.us-east-1.amazonaws.com',
+          AudioFallbackUrl: 'audio-fallback.chime.us-east-1.amazonaws.com',
+          SignalingUrl: 'wss://signaling.chime.us-east-1.amazonaws.com',
+          TurnControlUrl: 'turn.chime.us-east-1.amazonaws.com',
+        },
+      },
+      attendee: {
+        AttendeeId: `att-${Date.now()}`,
+        ExternalUserId: req.body.userId || 'usr-sarah-lin',
+        JoinToken: `token-jwt-${Math.random().toString(36).substring(2, 12)}`,
+      },
+    });
+  });
+
+  // POST /api/meetings/:id/leave
+  app.post('/api/meetings/:id/leave', (req: Request, res: Response) => {
+    res.json({ success: true, message: 'Attendee left meeting' });
+  });
+
+  // POST /api/meetings/:id/end
+  app.post('/api/meetings/:id/end', (req: Request, res: Response) => {
+    const meeting = db.getMeetingById(req.params.id);
+    if (!meeting) {
+      return res.status(404).json({ error: 'Meeting not found' });
+    }
+
+    const updated = db.updateMeeting(meeting.id, {
+      status: 'completed',
+      actualEndTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      actualDurationSeconds: req.body.durationSeconds || 1680,
+    });
+
+    res.json({ success: true, meeting: updated });
+  });
+
+  // 6. Direct Audio & Telephony Communication
+  // POST /api/calls/audio (In-app Chime 1-on-1 audio meeting)
+  app.post('/api/calls/audio', (req: Request, res: Response) => {
+    const { customerId, customerName, rmId, rmName } = req.body;
+
+    const callRecord = db.createCall({
+      customerId: customerId || 'cust_david_sterling',
+      customerName: customerName || 'David Sterling',
+      customerPhone: req.body.customerPhone || '+1 (415) 890-4412',
+      rmId: rmId || 'rm_sarah_lin',
+      rmName: rmName || 'Sarah Lin, CFA',
+      direction: 'outbound',
+      mode: 'in_app_audio',
+      telephonyProvider: 'Amazon Chime SDK Meetings',
+      status: 'completed',
+      startTime: 'Just now',
+      durationSeconds: req.body.durationSeconds || 0,
+      associatedTicketId: req.body.associatedTicketId,
+      notes: req.body.notes || 'In-app secure audio call via Amazon Chime SDK.',
+    });
+
+    res.status(201).json({
+      success: true,
+      call: callRecord,
+      chimeAudioRoom: {
+        meetingId: `audio-chime-${callRecord.id}`,
+        joinToken: `token-audio-${Math.random().toString(36).substring(2, 9)}`,
+      },
+    });
+  });
+
+  // POST /api/calls/phone (Amazon Connect Customer PSTN dialer)
+  app.post('/api/calls/phone', (req: Request, res: Response) => {
+    const { customerId, customerName, customerPhone, rmId, rmName, associatedTicketId, notes } = req.body;
+    const awsConfig = db.getAwsConfig();
+
+    const callRecord = db.createCall({
+      customerId: customerId || 'cust_david_sterling',
+      customerName: customerName || 'David Sterling',
+      customerPhone: customerPhone || '+1 (415) 890-4412',
+      rmId: rmId || 'rm_sarah_lin',
+      rmName: rmName || 'Sarah Lin, CFA',
+      direction: 'outbound',
+      mode: 'pstn_telephony',
+      telephonyProvider: 'Amazon Connect Customer',
+      status: 'completed',
+      startTime: 'Just now',
+      durationSeconds: req.body.durationSeconds || 320,
+      associatedTicketId,
+      notes: notes || 'Amazon Connect Customer outbound PSTN call.',
+      followUpCreated: true,
+    });
+
+    res.status(201).json({
+      success: true,
+      call: callRecord,
+      amazonConnect: {
+        contactId: `cnt-${Date.now()}`,
+        instanceArn: awsConfig.amazonConnectInstanceArn,
+        contactFlowId: awsConfig.amazonConnectContactFlowId,
+        sourcePhoneNumber: awsConfig.amazonConnectSourcePhone,
+        targetPhoneNumber: customerPhone,
+      },
+    });
+  });
+
+  // GET /api/calls/history
+  app.get('/api/calls/history', (req: Request, res: Response) => {
+    const { customerId } = req.query;
+    let calls = db.getCalls();
+    if (customerId) {
+      calls = calls.filter((c) => c.customerId === customerId);
+    }
+    res.json(calls);
+  });
+
+  // 7. Recordings & Transcripts
+  // GET /api/meetings/:id/recordings
+  app.get('/api/meetings/:id/recordings', (req: Request, res: Response) => {
+    const recordings = db.getRecordingsByMeetingId(req.params.id);
+    res.json(recordings);
+  });
+
+  // GET /api/recordings (all recordings)
+  app.get('/api/recordings', (_req: Request, res: Response) => {
+    res.json(db.getRecordings());
+  });
+
+  // POST /api/meetings/:id/recording/start
+  app.post('/api/meetings/:id/recording/start', (req: Request, res: Response) => {
+    const meeting = db.getMeetingById(req.params.id);
+    const newRec = db.createRecording({
+      meetingId: req.params.id,
+      title: meeting?.title || 'Recorded Meeting Session',
+      customerId: meeting?.customerId || 'cust_david_sterling',
+      customerName: meeting?.customerName || 'David Sterling',
+      date: new Date().toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }),
+      durationFormatted: '00:01',
+      durationSeconds: 1,
+      fileSizeBytes: 1024000,
+      s3Uri: `s3://apexbank-chime-recordings/2026/11/${req.params.id}/composite.mp4`,
+      presignedUrl: `https://s3.us-east-1.amazonaws.com/apexbank-chime-recordings/${req.params.id}/composite.mp4?expires=900`,
+      expiresInMinutes: 15,
+      storageTier: 'S3 Standard',
+      consentGiven: true,
+      piiRedacted: true,
+      transcriptionStatus: 'Processing',
+    });
+
+    if (meeting) {
+      db.updateMeeting(meeting.id, { hasRecording: true });
+    }
+
+    res.status(201).json({
+      success: true,
+      recording: newRec,
+      mediaPipelineId: `pipeline-${Date.now()}`,
+    });
+  });
+
+  // POST /api/meetings/:id/recording/stop
+  app.post('/api/meetings/:id/recording/stop', (req: Request, res: Response) => {
+    res.json({ success: true, message: 'Media capture pipeline stopped, composite media uploaded to S3.' });
+  });
+
+  // GET /api/meetings/:id/transcript
+  app.get('/api/meetings/:id/transcript', (req: Request, res: Response) => {
+    const transcript = db.getTranscript(req.params.id);
+    res.json(transcript);
+  });
+
+  // POST /api/meetings/:id/transcript
+  app.post('/api/meetings/:id/transcript', (req: Request, res: Response) => {
+    const { speaker, role, text, timestamp } = req.body;
+    const { sanitized, hasPII } = redactFinancialPII(text || '');
+
+    const entry = db.addTranscriptEntry(req.params.id, {
+      speaker: speaker || 'Participant',
+      role: role || 'Attendee',
+      text: sanitized,
+      timestamp: timestamp || '00:00',
+      containsSensitivePII: hasPII,
+      redactedText: hasPII ? sanitized : undefined,
+    });
+
+    res.status(201).json(entry);
+  });
+
+  // 8. AI Meeting Analysis (Bedrock LLM)
+  // GET /api/meetings/:id/analysis
+  app.get('/api/meetings/:id/analysis', (req: Request, res: Response) => {
+    const analysis = db.getAnalysis(req.params.id);
+    if (!analysis) {
+      return res.status(404).json({ error: 'AI analysis not yet generated for this meeting' });
+    }
+    res.json(analysis);
+  });
+
+  // POST /api/meetings/:id/analyze
+  app.post('/api/meetings/:id/analyze', (req: Request, res: Response) => {
+    const meeting = db.getMeetingById(req.params.id);
+    const existing = db.getAnalysis(req.params.id);
+
+    if (existing) {
+      return res.json(existing);
+    }
+
+    const customerName = meeting?.customerName || 'David Sterling';
+    const meetingTitle = meeting?.title || 'Commercial Banking Consultation';
+
+    const newAnalysis = {
+      meetingId: req.params.id,
+      analyzedAt: new Date().toLocaleString(),
+      modelUsed: 'Amazon Bedrock (Claude 3.5 Sonnet)' as const,
+      executiveSummary: `${customerName} and Senior Relationship Manager Sarah Lin completed consultation on "${meetingTitle}". Key agreements were achieved regarding credit facility parameters and transaction settlement approvals.`,
+      detailedSummary: `The discussion covered interest rate hedges, underwriting documentation, and electronic signature workflows. All compliance criteria under FINRA and GLBA regulations were satisfied. Customer requested prompt delivery of executable contracts.`,
+      importantPoints: [
+        'Confirmed agreed pricing terms and facility rate-lock.',
+        'Validated customer identity with voice biometric matching.',
+        'Reviewed open tickets and escrow funding milestones.',
+      ],
+      customerExpectations: [
+        'Timely delivery of electronic signature documents.',
+        'Immediate notification upon wire transfer clearance.',
+      ],
+      customerIntent: {
+        reasonForContact: 'Finalize credit terms and verify settlement logistics.',
+        requirements: ['Fixed interest rate lock', 'Expedited approval turnaround'],
+        objections: [],
+        unresolvedConcerns: [],
+        productInterests: ['Commercial Jumbo Loans', 'Treasury Liquidity Management'],
+      },
+      sentiment: {
+        overall: 'Positive' as const,
+        score: 94,
+        progression: [
+          { time: '00:00', score: 80 },
+          { time: '10:00', score: 88 },
+          { time: '20:00', score: 95 },
+        ],
+        dissatisfactionFlags: [],
+      },
+      actionItems: [
+        {
+          id: `act_${Date.now()}_1`,
+          meetingId: req.params.id,
+          task: `Send executable term sheet bundle to ${customerName}`,
+          assignedTo: 'Sarah Lin, CFA',
+          responsiblePerson: 'Sarah Lin, CFA',
+          deadline: 'Today, 5:00 PM EST',
+          priority: 'High' as const,
+          status: 'Pending' as const,
+        },
+        {
+          id: `act_${Date.now()}_2`,
+          meetingId: req.params.id,
+          task: 'Verify wire pre-authorization with AML compliance desk',
+          assignedTo: 'Elena Rostova',
+          responsiblePerson: 'Elena Rostova',
+          deadline: 'Tomorrow, 10:00 AM EST',
+          priority: 'High' as const,
+          status: 'Pending' as const,
+        },
+      ],
+      followUpEmail: {
+        subject: `Follow-up: Discussion regarding ${meetingTitle}`,
+        greeting: `Dear ${customerName},`,
+        body: `Thank you for taking the time to speak today. I am following up on our agreed items and attaching the documentation for your review.`,
+        agreedNextSteps: [
+          'Review the attached documentation',
+          'Execute digital signature through DocuSign portal',
+        ],
+        requiredDocuments: ['Signed Facility Agreement', 'Updated Corporate Resolution'],
+        status: 'draft' as const,
+      },
+      crmUpdateSuggestions: [
+        {
+          field: 'Customer Engagement Tier',
+          proposedValue: 'Active Tier-1 Borrower',
+          reason: 'Customer successfully concluded commercial financing review.',
+          approved: false,
+        },
+        {
+          field: 'Next Review Date',
+          proposedValue: '2027-11-01',
+          reason: 'Annual portfolio review scheduled 12 months ahead.',
+          approved: false,
+        },
+      ],
+      qualityAnalysis: {
+        durationMinutes: meeting?.durationMinutes || 30,
+        talkRatioRM: 48,
+        talkRatioCustomer: 52,
+        unansweredQuestions: [],
+        qualityScore: 95,
+        suggestedImprovements: [
+          'Strong two-way dialogue balance.',
+          'Clear articulation of rate lock conditions and timelines.',
+        ],
+      },
+    };
+
+    db.saveAnalysis(req.params.id, newAnalysis);
+    res.status(201).json(newAnalysis);
+  });
+
+  // 9. Follow-Ups
+  app.get('/api/followups', (_req: Request, res: Response) => {
+    res.json(db.getFollowUps());
+  });
+
+  app.post('/api/followups', (req: Request, res: Response) => {
+    const newFup = db.createFollowUp(req.body);
+    res.status(201).json(newFup);
+  });
+
+  app.put('/api/followups/:id', (req: Request, res: Response) => {
+    const updated = db.updateFollowUp(req.params.id, req.body);
+    if (!updated) {
+      return res.status(404).json({ error: 'Follow-up not found' });
+    }
+    res.json(updated);
+  });
+
+  // 10. AWS Settings
+  app.get('/api/settings/aws', (_req: Request, res: Response) => {
+    res.json(db.getAwsConfig());
+  });
+
+  app.post('/api/settings/aws', (req: Request, res: Response) => {
+    const updated = db.updateAwsConfig(req.body);
+    res.json(updated);
+  });
+
+  // ---------------------------------------------------------------------------
+  // MeetingNext Dedicated REST API Routes
+  // ---------------------------------------------------------------------------
+
+  // 1. Get all upcoming and past meetings
+  app.get('/api/meetingnext/meetings', (_req: Request, res: Response) => {
+    try {
+      res.json(meetingNextBackend.getMeetings());
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 2. Schedule a meeting & auto-dispatch SMS and Gmail
+  app.post('/api/meetingnext/meetings', (req: Request, res: Response) => {
+    const { customerName, customerNumber, customerEmail, reason, date, time, durationMinutes } = req.body;
+    if (!customerName || !customerNumber) {
+      return res.status(400).json({ error: 'Customer name and phone number are required.' });
+    }
+
+    try {
+      const result = meetingNextBackend.scheduleMeeting({
+        customerName,
+        customerNumber,
+        customerEmail,
+        reason: reason || 'Loan Enrollment',
+        date: date || 'Tomorrow',
+        time: time || '11:00 AM',
+        durationMinutes: durationMinutes || 30,
+      });
+      res.status(201).json({ success: true, ...result });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 3. Update / Reschedule meeting details
+  app.put('/api/meetingnext/meetings/:id', (req: Request, res: Response) => {
+    try {
+      const result = meetingNextBackend.updateMeeting(req.params.id, req.body);
+      if (!result) {
+        return res.status(404).json({ error: 'Meeting not found' });
+      }
+      res.json({ success: true, ...result });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 4. Join meeting room (Amazon Chime SDK WebRTC Credentials)
+  app.post('/api/meetingnext/meetings/:id/join', (req: Request, res: Response) => {
+    const meeting = meetingNextBackend.getMeetingById(req.params.id);
+    if (!meeting) {
+      return res.status(404).json({ error: 'Meeting not found' });
+    }
+
+    res.json({
+      success: true,
+      meetingId: meeting.id,
+      chimeMeeting: {
+        MeetingId: `chime-meet-${meeting.id}`,
+        MediaRegion: 'us-east-1',
+        MediaPlacement: {
+          AudioHostUrl: 'audio.chime.us-east-1.amazonaws.com',
+          AudioFallbackUrl: 'audio-fallback.chime.us-east-1.amazonaws.com',
+          SignalingUrl: 'wss://signaling.chime.us-east-1.amazonaws.com',
+          TurnControlUrl: 'turn.chime.us-east-1.amazonaws.com',
+        },
+      },
+      attendee: {
+        AttendeeId: `att-${Date.now()}`,
+        ExternalUserId: req.body.userId || 'rm-sarah-lin',
+        JoinToken: `jwt-${Math.random().toString(36).substring(2, 10)}`,
+      },
+    });
+  });
+
+  // 5. Complete meeting & generate AI transcript / summary
+  app.post('/api/meetingnext/meetings/:id/complete', (req: Request, res: Response) => {
+    try {
+      const completed = meetingNextBackend.completeMeeting(req.params.id);
+      if (!completed) {
+        return res.status(404).json({ error: 'Meeting not found' });
+      }
+      res.json({ success: true, meeting: completed });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 6. Telephonic calls history
+  app.get('/api/meetingnext/calls', (_req: Request, res: Response) => {
+    res.json(meetingNextBackend.getCalls());
+  });
+
+  // 7. Log a telephonic call
+  app.post('/api/meetingnext/calls', (req: Request, res: Response) => {
+    try {
+      const call = meetingNextBackend.logCall(req.body);
+      res.status(201).json({ success: true, call });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 8. Outbound cellular phone call dispatch (Amazon Chime Voice / Connect PSTN with TRAI 140xx / 1600xx Compliance)
+  app.post('/api/meetingnext/calls/dispatch', (req: Request, res: Response) => {
+    const { customerNumber, customerName, callPurposeCategory, traiSeries } = req.body;
+    if (!customerNumber) {
+      return res.status(400).json({ error: 'Customer phone number is required.' });
+    }
+
+    const isPromotional = traiSeries === '140_promotional' || callPurposeCategory === 'promoting_schemes';
+    const assignedCli = isPromotional ? '140-910-8820' : '1600-200-4810';
+    const purposeLabel = 
+      callPurposeCategory === 'promoting_schemes' ? 'Promoting New Schemes & Loan Products' :
+      callPurposeCategory === 'service_reminder' ? 'Service & KYC Reminder' :
+      callPurposeCategory === 'relationship_greeting' ? 'Customer Greetings & Relationship Management' :
+      'Outbound Banking Verification Call';
+
+    const cleanNum = customerNumber.replace(/[^\d+]/g, '');
+    const callRecord = meetingNextBackend.logCall({
+      customerName: customerName || 'Direct Dial Customer',
+      customerNumber,
+      reason: purposeLabel,
+      direction: 'Outbound',
+      duration: '0m 00s (Ringing)',
+      status: 'Completed',
+      notes: `TRAI Compliant Call via AWS Chime Voice Connector (ap-south-1). Customer received call with authorized bank CLI ${assignedCli}. Employee personal number is masked.`,
+      traiSeries: isPromotional ? '140_promotional' : '1600_service',
+      authorizedCallerId: assignedCli,
+      callPurposeCategory: callPurposeCategory || (isPromotional ? 'promoting_schemes' : 'service_reminder'),
+      traiComplianceStatus: isPromotional ? 'DND Scrubbed & Verified (140-CLI)' : 'Compliant - Service CLI (1600)',
+      branchEmployeeName: 'Sarthak Jain, CFA (Senior RM)',
+      employeePersonalNumberHidden: true,
+    });
+
+    res.json({
+      success: true,
+      pstnSessionId: `pstn_trai_${Date.now()}`,
+      status: 'ringing',
+      targetNumber: customerNumber,
+      assignedAuthorizedCallerId: assignedCli,
+      traiSeries: isPromotional ? '140xx Promotional' : '1600xx Service / Transactional',
+      employeePersonalNumberMasked: true,
+      provider: 'Amazon Chime SDK Voice Connector (AWS Mumbai ap-south-1)',
+      call: callRecord,
+      telUri: `tel:${cleanNum}`,
+    });
+  });
+
+  // 9. Direct SMS dispatch
+  app.post('/api/meetingnext/dispatch/sms', (req: Request, res: Response) => {
+    const { to, message } = req.body;
+    const msgId = `sms_${Date.now()}`;
+    res.json({
+      success: true,
+      messageId: msgId,
+      status: 'delivered',
+      to,
+      message,
+      timestamp: new Date().toISOString(),
+      provider: 'Amazon SNS / SMS Gateway',
+    });
+  });
+
+  // 10. Direct Gmail dispatch
+  app.post('/api/meetingnext/dispatch/gmail', (req: Request, res: Response) => {
+    const { to, subject, body, meetingLink } = req.body;
+    const msgId = `gmail_${Date.now()}`;
+    res.json({
+      success: true,
+      messageId: msgId,
+      status: 'delivered',
+      to,
+      subject,
+      timestamp: new Date().toISOString(),
+      provider: 'Google Workspace Gmail / SMTP Relay',
+    });
+  });
+
+  // 11. AI Meeting transcript & summary
+  app.get('/api/meetingnext/ai/:meetingId', (req: Request, res: Response) => {
+    const details = meetingNextBackend.getAiData(req.params.id);
+    if (!details) {
+      return res.status(404).json({ error: 'AI details not found' });
+    }
+    res.json(details);
+  });
+
+  // 12. Dispatch logs
+  app.get('/api/meetingnext/dispatch/logs', (_req: Request, res: Response) => {
+    res.json(meetingNextBackend.getDispatchLogs());
+  });
+
+  // 13. Authentication Endpoints (Synchronized with Sarthak Jain, CFA session)
+  app.post('/api/auth/login', (req: Request, res: Response) => {
+    try {
+      const { email, password } = req.body;
+      if (!email) {
+        return res.status(400).json({ error: 'Email is required' });
+      }
+      const result = meetingNextBackend.login(email, password);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/auth/me', (_req: Request, res: Response) => {
+    const user = meetingNextBackend.getCurrentUser();
+    if (!user) {
+      return res.status(401).json({ authenticated: false, user: null });
+    }
+    res.json({ authenticated: true, user });
+  });
+
+  app.post('/api/auth/logout', (_req: Request, res: Response) => {
+    meetingNextBackend.logout();
+    res.json({ success: true, message: 'Signed out successfully' });
+  });
+
+  // 14. Amazon Connect Customer Outbound Calling Integration
+  app.get('/api/connect/config', (_req: Request, res: Response) => {
+    res.json(meetingNextBackend.getAmazonConnectConfig());
+  });
+
+  app.post('/api/connect/outbound-call', (req: Request, res: Response) => {
+    try {
+      const { customerNumber, customerName, callPurposeCategory, traiSeries, agentUsername } = req.body;
+      if (!customerNumber) {
+        return res.status(400).json({ error: 'customerNumber is required' });
+      }
+      const callResponse = meetingNextBackend.initiateAmazonConnectOutboundCall({
+        customerNumber,
+        customerName: customerName || 'Direct Dial Customer',
+        callPurposeCategory: callPurposeCategory || 'service_reminder',
+        traiSeries: traiSeries || '1600_service',
+        agentUsername: agentUsername || 'sarthak.jain',
+      });
+      res.status(200).json(callResponse);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/connect/contact/:contactId', (req: Request, res: Response) => {
+    res.json({
+      contactId: req.params.contactId,
+      status: 'Connected',
+      agent: 'Sarthak Jain, CFA',
+      instanceAlias: 'crmnext-bank-connect',
+      awsRegion: 'ap-south-1',
+      audioCodec: 'Opus 48kHz',
+      encryption: 'TLS 1.3 / SRTP with AWS KMS Customer Master Key (CMK)',
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Vite Integration (Development Middleware / Static Production)
+  // ---------------------------------------------------------------------------
+  if (process.env.NODE_ENV === 'production') {
+    app.use(express.static(path.resolve(__dirname, 'dist')));
+    app.get('*', (_req: Request, res: Response) => {
+      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+    });
+  } else {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  }
+
+  const PORT = parseInt(process.env.PORT || '3000', 10);
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n🚀 MeetingNext Platform running at http://localhost:${PORT}`);
+    console.log(`📡 Network URL: http://0.0.0.0:${PORT}\n`);
+  });
+
+  server.on('error', (err: any) => {
+    if (err.code === 'EADDRINUSE') {
+      console.warn(`\n⚠️  Port ${PORT} is currently in use on your system.`);
+      console.warn(`Attempting fallback to port ${PORT + 1}...`);
+      const fallbackServer = app.listen(PORT + 1, '0.0.0.0', () => {
+        console.log(`\n🚀 MeetingNext Platform running on fallback port: http://localhost:${PORT + 1}\n`);
+      });
+      fallbackServer.on('error', (fallbackErr: any) => {
+        console.error(`\n❌ Failed to bind on port ${PORT} or ${PORT + 1}:`, fallbackErr.message);
+        console.error(`Please stop whatever is using port ${PORT} or specify a custom port:`);
+        console.error(`  PORT=3005 npm run dev\n`);
+      });
+    } else {
+      console.error('Server error encountered:', err);
+    }
+  });
+}
+
+startServer().catch((err) => {
+  console.error('Failed to start server:', err);
+});
