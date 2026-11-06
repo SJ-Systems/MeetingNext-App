@@ -667,6 +667,66 @@ class MeetingNextApiService {
       return true;
     }
   }
+
+  // Live Room Participants Synchronization
+  async getRoomParticipants(meetingId: string): Promise<any[]> {
+    try {
+      const response = await apiClient.get<any[]>(`/api/meetingnext/meetings/${encodeURIComponent(meetingId)}/participants`);
+      return response.data;
+    } catch {
+      return [];
+    }
+  }
+
+  async joinRoomParticipant(meetingId: string, participant: any): Promise<any[]> {
+    try {
+      const response = await apiClient.post<any[]>(
+        `/api/meetingnext/meetings/${encodeURIComponent(meetingId)}/participants`,
+        participant
+      );
+      return response.data;
+    } catch {
+      return [];
+    }
+  }
+
+  async heartbeatRoom(meetingId: string, participantId: string): Promise<void> {
+    try {
+      await apiClient.post(`/api/meetingnext/meetings/${encodeURIComponent(meetingId)}/participants/${encodeURIComponent(participantId)}/heartbeat`);
+    } catch {
+      // ignore
+    }
+  }
+
+  async leaveRoomParticipant(meetingId: string, participantId: string): Promise<void> {
+    try {
+      await apiClient.delete(`/api/meetingnext/meetings/${encodeURIComponent(meetingId)}/participants/${encodeURIComponent(participantId)}`);
+    } catch {
+      // ignore
+    }
+  }
+
+  // Live Room Messages
+  async getRoomMessages(meetingId: string): Promise<any[]> {
+    try {
+      const response = await apiClient.get<any[]>(`/api/meetingnext/meetings/${encodeURIComponent(meetingId)}/messages`);
+      return response.data;
+    } catch {
+      return [];
+    }
+  }
+
+  async sendRoomMessage(meetingId: string, message: any): Promise<any> {
+    try {
+      const response = await apiClient.post(
+        `/api/meetingnext/meetings/${encodeURIComponent(meetingId)}/messages`,
+        message
+      );
+      return response.data;
+    } catch {
+      return null;
+    }
+  }
 }
 
 export const meetingNextApi = new MeetingNextApiService();

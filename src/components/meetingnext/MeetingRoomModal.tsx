@@ -30,27 +30,35 @@ import {
   LayoutGrid,
   Smile,
   Copy,
-  ExternalLink
+  ExternalLink,
+  UserCheck
 } from 'lucide-react';
 import { ScheduledMeeting } from '../../types/meetingnext';
 import { createMicrophoneMeter } from '../../utils/audioTones';
 import { LiveSpeechEngine, redactFinancialPII } from '../../utils/speechRecognition';
 import { generateMeetingLink } from '../../utils/appUrl';
+import { meetingNextApi } from '../../services/meetingNextApi';
 
-interface MeetingRoomModalProps {
-  meeting: ScheduledMeeting;
-  isOpen: boolean;
-  onLeaveMeeting: () => void;
-  onCompleteMeeting?: (meetingId: string) => void;
+interface RemoteParticipant {
+  id: string;
+  name: string;
+  role: string;
+  isHost: boolean;
+  avatarColor: string;
+  isMuted: boolean;
+  isVideoOff: boolean;
+  isScreenSharing: boolean;
+  lastHeartbeat: number;
 }
 
 interface ChatMessage {
   id: string;
-  sender: string;
-  role: string;
+  senderId?: string;
+  senderName: string;
+  senderRole: string;
   text: string;
-  time: string;
-  isLocal: boolean;
+  timestamp: string;
+  isHost?: boolean;
 }
 
 interface TranscriptItem {
@@ -63,12 +71,30 @@ interface TranscriptItem {
   containsPII?: boolean;
 }
 
+interface MeetingRoomModalProps {
+  meeting: ScheduledMeeting;
+  isOpen: boolean;
+  currentUser?: { id: string; name: string; role?: string } | null;
+  onLeaveMeeting: () => void;
+  onCompleteMeeting?: (meetingId: string) => void;
+}
+
 export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
   meeting,
   isOpen,
+  currentUser,
   onLeaveMeeting,
   onCompleteMeeting,
 }) => {
+  // Local Participant Identity
+  const localParticipantId = useRef<string>(
+    currentUser?.id || `user_${Math.random().toString(36).substring(2, 9)}`
+  ).current;
+
+  const localDisplayName = currentUser?.name || 'Sarthak Jain, CFA';
+  const localRole = currentUser?.role || 'Senior Relationship Manager';
+  const isLocalHost = !currentUser || currentUser.id.includes('rm') || currentUser.name.includes('Sarthak');
+
   // Local Media Streams & Controls
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [isMicMuted, setIsMicMuted] = useState(false);
@@ -82,6 +108,9 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
   const [noiseFocusActive, setNoiseFocusActive] = useState(true);
   const [virtualBgActive, setVirtualBgActive] = useState(false);
   const [activeSpeakerId, setActiveSpeakerId] = useState<string>('local');
+
+  // Real Multi-Participant Roster
+  const [remoteParticipants, setRemoteParticipants] = useState<RemoteParticipant[]>([]);
 
   // UI State
   const [layoutMode, setLayoutMode] = useState<'grid' | 'spotlight' | 'presentation'>('grid');
@@ -117,23 +146,14 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
     disclosureAccepted: false,
   });
 
-  // In-Meeting Chat
+  // In-Meeting Chat (Synced with Backend)
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
       id: 'c_init_1',
-      sender: 'Amazon Chime SDK',
-      role: 'SYSTEM',
+      senderName: 'MeetingNext Security',
+      senderRole: 'SYSTEM',
       text: 'Encrypted WebRTC media session established in ap-south-1 (Mumbai). TLS 1.3 / SRTP 256-bit.',
-      time: 'Just now',
-      isLocal: false,
-    },
-    {
-      id: 'c_init_2',
-      sender: meeting.customerName,
-      role: 'CLIENT',
-      text: `Hello Sarthak, I am connected for our ${meeting.reason} consultation.`,
-      time: 'Just now',
-      isLocal: false,
+      timestamp: 'Just now',
     },
   ]);
   const [chatInput, setChatInput] = useState('');
@@ -142,19 +162,11 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
   const [transcripts, setTranscripts] = useState<TranscriptItem[]>([
     {
       id: 't_init_1',
-      speaker: 'Sarthak Jain, CFA',
-      role: 'Senior Relationship Manager',
-      text: `Good day ${meeting.customerName}, welcome to the MeetingNext video consultation portal.`,
-      timestamp: '00:05',
+      speaker: localDisplayName,
+      role: localRole,
+      text: `Meeting started for ${meeting.reason}. Waiting for participants to join.`,
+      timestamp: '00:01',
       sentiment: 'positive',
-    },
-    {
-      id: 't_init_2',
-      speaker: meeting.customerName,
-      role: 'CLIENT',
-      text: `Thank you Sarthak. Let us review the agreed terms for my ${meeting.reason}.`,
-      timestamp: '00:14',
-      sentiment: 'neutral',
     },
   ]);
 
@@ -206,7 +218,7 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
         });
         meterCleanupRef.current = meter.stop;
 
-        // Enumerate devices after permission granted
+        // Enumerate devices
         try {
           const devices = await navigator.mediaDevices.enumerateDevices();
           if (active) {
@@ -229,12 +241,21 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
 
     startMedia();
 
-    // Register with backend Chime meeting session in ap-south-1
-    fetch(`/api/chime/meetings/${meeting.id}/join`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ externalUserId: 'rm_sarthak_jain' }),
-    }).catch((e) => console.warn('Backend chime join registration notice:', e));
+    // Register local participant with backend
+    meetingNextApi.joinRoomParticipant(meeting.id, {
+      id: localParticipantId,
+      name: localDisplayName,
+      role: localRole,
+      isHost: isLocalHost,
+      avatarColor: isLocalHost ? 'bg-rose-600' : 'bg-blue-600',
+      isMuted: isMicMuted,
+      isVideoOff: isVideoOff,
+      isScreenSharing: isScreenSharing,
+    }).then((all) => {
+      if (Array.isArray(all)) {
+        setRemoteParticipants(all.filter((p) => p.id !== localParticipantId));
+      }
+    });
 
     // Initialize Speech Recognition Engine for Live Captions
     try {
@@ -246,8 +267,8 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
             ...prev,
             {
               id: `speech_${Date.now()}`,
-              speaker: 'Sarthak Jain, CFA',
-              role: 'Senior Relationship Manager',
+              speaker: localDisplayName,
+              role: localRole,
               text: sanitized,
               timestamp: new Date().toLocaleTimeString([], { minute: '2-digit', second: '2-digit' }),
               sentiment: 'positive',
@@ -274,8 +295,45 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
       if (speechEngineRef.current) {
         speechEngineRef.current.stop();
       }
+      // Leave room in backend
+      meetingNextApi.leaveRoomParticipant(meeting.id, localParticipantId);
     };
   }, [isOpen, selectedVideoDevice, selectedAudioDevice]);
+
+  // ---------------------------------------------------------------------------
+  // 2. Real-time Roster & Chat Polling (Sync with other tabs / devices)
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const syncInterval = window.setInterval(async () => {
+      try {
+        // Heartbeat
+        await meetingNextApi.heartbeatRoom(meeting.id, localParticipantId);
+
+        // Fetch active remote participants
+        const participants = await meetingNextApi.getRoomParticipants(meeting.id);
+        if (Array.isArray(participants)) {
+          const remotes = participants.filter((p: any) => p.id !== localParticipantId);
+          setRemoteParticipants(remotes);
+        }
+
+        // Fetch shared room messages
+        const messages = await meetingNextApi.getRoomMessages(meeting.id);
+        if (Array.isArray(messages) && messages.length > 0) {
+          setChatMessages((prev) => {
+            const existingIds = new Set(prev.map((m) => m.id));
+            const newOnes = messages.filter((m: any) => !existingIds.has(m.id));
+            return newOnes.length > 0 ? [...prev, ...newOnes] : prev;
+          });
+        }
+      } catch (err) {
+        // silent sync error
+      }
+    }, 1800);
+
+    return () => clearInterval(syncInterval);
+  }, [isOpen, meeting.id, localParticipantId]);
 
   // Bind local video element whenever stream changes
   useEffect(() => {
@@ -329,7 +387,18 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
         track.enabled = !track.enabled;
       });
     }
-    setIsMicMuted((prev) => !prev);
+    const nextMuted = !isMicMuted;
+    setIsMicMuted(nextMuted);
+    // sync status to backend
+    meetingNextApi.joinRoomParticipant(meeting.id, {
+      id: localParticipantId,
+      name: localDisplayName,
+      role: localRole,
+      isHost: isLocalHost,
+      isMuted: nextMuted,
+      isVideoOff,
+      isScreenSharing,
+    });
   };
 
   const toggleVideo = () => {
@@ -338,7 +407,17 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
         track.enabled = !track.enabled;
       });
     }
-    setIsVideoOff((prev) => !prev);
+    const nextVideoOff = !isVideoOff;
+    setIsVideoOff(nextVideoOff);
+    meetingNextApi.joinRoomParticipant(meeting.id, {
+      id: localParticipantId,
+      name: localDisplayName,
+      role: localRole,
+      isHost: isLocalHost,
+      isMuted: isMicMuted,
+      isVideoOff: nextVideoOff,
+      isScreenSharing,
+    });
   };
 
   const toggleScreenShare = async () => {
@@ -416,7 +495,7 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
   };
 
   // Send In-Meeting Chat
-  const handleSendChat = (e: React.FormEvent) => {
+  const handleSendChat = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
 
@@ -424,15 +503,19 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
 
     const newMsg: ChatMessage = {
       id: `chat_${Date.now()}`,
-      sender: 'Sarthak Jain, CFA',
-      role: 'Senior Relationship Manager',
+      senderId: localParticipantId,
+      senderName: localDisplayName,
+      senderRole: localRole,
       text: sanitized,
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      isLocal: true,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      isHost: isLocalHost,
     };
 
     setChatMessages((prev) => [...prev, newMsg]);
     setChatInput('');
+
+    // Save to shared backend messages
+    await meetingNextApi.sendRoomMessage(meeting.id, newMsg);
 
     if (hasPII) {
       setTranscripts((prev) => [
@@ -478,6 +561,7 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
     if (speechEngineRef.current) {
       speechEngineRef.current.stop();
     }
+    meetingNextApi.leaveRoomParticipant(meeting.id, localParticipantId);
     if (onCompleteMeeting) {
       onCompleteMeeting(meeting.id);
     }
@@ -494,6 +578,7 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
     if (speechEngineRef.current) {
       speechEngineRef.current.stop();
     }
+    meetingNextApi.leaveRoomParticipant(meeting.id, localParticipantId);
     onLeaveMeeting();
   };
 
@@ -521,7 +606,11 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
                 </span>
               </h1>
               <p className="text-[11px] text-slate-400 truncate flex items-center gap-1.5">
-                <span>Customer: {meeting.customerName}</span>
+                <span>
+                  {remoteParticipants.length === 0
+                    ? `Host: ${localDisplayName}`
+                    : `${remoteParticipants.length + 1} Participants Active`}
+                </span>
                 <span className="text-slate-600">·</span>
                 <span className="text-emerald-400 flex items-center gap-1">
                   <Lock className="w-3 h-3" /> ap-south-1 (Mumbai)
@@ -663,8 +752,7 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
                       Co-Browsing & Document Presentation Stage
                     </h3>
                     <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-                      Share the loan term sheet, sanction letter, or banking agreement directly with{' '}
-                      <span className="text-white font-medium">{meeting.customerName}</span> via WebRTC Content Share.
+                      Share documents or sanction letters directly with connected participants via WebRTC Content Share.
                     </p>
                     <button
                       onClick={toggleScreenShare}
@@ -685,7 +773,7 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
                 <div className="w-48 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden relative shrink-0 flex items-center justify-center">
                   {isVideoOff ? (
                     <div className="w-10 h-10 rounded-full bg-rose-600 flex items-center justify-center font-bold text-white text-xs">
-                      SJ
+                      {localDisplayName.slice(0, 2).toUpperCase()}
                     </div>
                   ) : (
                     <video
@@ -697,36 +785,34 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
                     />
                   )}
                   <div className="absolute bottom-1.5 left-2 text-[10px] text-white bg-black/70 px-1.5 py-0.5 rounded truncate max-w-[85%] font-medium">
-                    Sarthak Jain (You)
+                    {localDisplayName} (You)
                   </div>
                 </div>
 
-                {/* Customer thumbnail */}
-                <div className="w-48 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden relative shrink-0 flex items-center justify-center">
-                  <div className="text-center p-2">
-                    <div className="w-10 h-10 rounded-full bg-emerald-600 text-white flex items-center justify-center mx-auto mb-1 text-xs font-bold shadow-md">
-                      {meeting.customerName
-                        .split(' ')
-                        .map((n) => n[0])
-                        .slice(0, 2)
-                        .join('')}
+                {/* Remote participant thumbnails */}
+                {remoteParticipants.map((p) => (
+                  <div key={p.id} className="w-48 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden relative shrink-0 flex items-center justify-center">
+                    <div className="text-center p-2">
+                      <div className={`w-10 h-10 rounded-full ${p.avatarColor || 'bg-blue-600'} text-white flex items-center justify-center mx-auto mb-1 text-xs font-bold shadow-md`}>
+                        {p.name.split(' ').map((n) => n[0]).slice(0, 2).join('')}
+                      </div>
+                      <span className="text-[11px] text-slate-300 block truncate font-medium">
+                        {p.name}
+                      </span>
                     </div>
-                    <span className="text-[11px] text-slate-300 block truncate font-medium">
-                      {meeting.customerName}
-                    </span>
+                    <div className="absolute bottom-1.5 left-2 text-[10px] text-white bg-black/70 px-1.5 py-0.5 rounded truncate max-w-[85%] font-medium">
+                      {p.name}
+                    </div>
                   </div>
-                  <div className="absolute bottom-1.5 left-2 text-[10px] text-white bg-black/70 px-1.5 py-0.5 rounded truncate max-w-[85%] font-medium">
-                    {meeting.customerName}
-                  </div>
-                </div>
+                ))}
               </div>
             </div>
           )}
 
           {/* Grid Layout Mode (Google Meet / Zoom Style) */}
           {layoutMode !== 'presentation' && (
-            <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-4 auto-rows-fr min-h-0">
-              {/* Local Participant Tile (Relationship Manager) */}
+            <div className={`flex-1 grid ${remoteParticipants.length === 0 ? 'grid-cols-1 md:grid-cols-2' : remoteParticipants.length === 1 ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3'} gap-4 auto-rows-fr min-h-0`}>
+              {/* Local Participant Tile */}
               <div
                 className={`relative bg-slate-900 border rounded-2xl overflow-hidden flex items-center justify-center shadow-lg transition-all ${
                   activeSpeakerId === 'local' && localAudioLevel > 20
@@ -737,10 +823,10 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
                 {isVideoOff ? (
                   <div className="flex flex-col items-center justify-center">
                     <div className="w-24 h-24 rounded-full bg-gradient-to-br from-rose-600 to-red-800 flex items-center justify-center text-3xl font-bold text-white mb-3 shadow-xl">
-                      SJ
+                      {localDisplayName.slice(0, 2).toUpperCase()}
                     </div>
-                    <span className="text-sm font-semibold text-slate-200">Sarthak Jain, CFA</span>
-                    <span className="text-xs text-slate-400">Senior Relationship Manager</span>
+                    <span className="text-sm font-semibold text-slate-200">{localDisplayName}</span>
+                    <span className="text-xs text-slate-400">{localRole}</span>
                   </div>
                 ) : (
                   <video
@@ -754,8 +840,8 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
 
                 {/* Local Tile Overlays */}
                 <div className="absolute top-3 left-3 bg-slate-950/80 backdrop-blur-sm border border-slate-800 px-2.5 py-1 rounded-lg text-xs text-slate-300 flex items-center gap-1.5 font-medium">
-                  <span>Sarthak Jain, CFA (You)</span>
-                  <span className="text-rose-400 font-mono text-[10px]">· RM Desk</span>
+                  <span>{localDisplayName} (You)</span>
+                  <span className="text-rose-400 font-mono text-[10px]">· {isLocalHost ? 'Host' : 'Participant'}</span>
                 </div>
 
                 <div className="absolute bottom-3 left-3 flex items-center gap-2">
@@ -784,57 +870,73 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
                 </div>
               </div>
 
-              {/* Remote Participant Tile: Customer */}
-              <div
-                className={`relative bg-slate-900 border rounded-2xl overflow-hidden flex items-center justify-center shadow-lg transition-all ${
-                  activeSpeakerId === 'customer'
-                    ? 'border-emerald-500 ring-2 ring-emerald-500/30'
-                    : 'border-slate-800'
-                }`}
-              >
-                <div className="w-full h-full relative flex items-center justify-center bg-gradient-to-b from-slate-900 to-slate-950">
-                  <div className="flex flex-col items-center">
-                    <div className="relative mb-3">
-                      <div className="w-24 h-24 rounded-full bg-gradient-to-tr from-emerald-600 to-teal-700 flex items-center justify-center text-3xl font-bold text-white shadow-xl">
-                        {meeting.customerName
-                          .split(' ')
-                          .map((n) => n[0])
-                          .slice(0, 2)
-                          .join('')}
-                      </div>
-                      {/* Speaking Pulse Ring */}
-                      <span className="absolute -inset-2 rounded-full border-2 border-emerald-400/60 animate-ping pointer-events-none" />
-                    </div>
-                    <span className="text-base font-semibold text-white">{meeting.customerName}</span>
-                    <span className="text-xs text-emerald-400 font-mono mt-0.5">
-                      Customer · {meeting.customerNumber}
-                    </span>
-
-                    {/* Customer Real-time audio waveform animation */}
-                    <div className="flex items-center gap-1 mt-3">
-                      <span className="w-1 h-3 bg-emerald-400 rounded-full animate-pulse" />
-                      <span className="w-1 h-6 bg-emerald-400 rounded-full animate-pulse delay-75" />
-                      <span className="w-1 h-8 bg-emerald-400 rounded-full animate-pulse delay-150" />
-                      <span className="w-1 h-4 bg-emerald-400 rounded-full animate-pulse delay-100" />
-                      <span className="w-1 h-2 bg-emerald-400 rounded-full animate-pulse" />
-                    </div>
+              {/* Remote Participants OR Clean Waiting Card (NO FAKE JAMES MILLER!) */}
+              {remoteParticipants.length === 0 ? (
+                <div className="relative bg-slate-900/90 border border-slate-800 rounded-2xl overflow-hidden flex flex-col items-center justify-center p-8 text-center shadow-lg">
+                  <div className="w-20 h-20 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center mb-4 relative shadow-inner">
+                    <Users className="w-8 h-8 text-rose-400" />
+                    <span className="absolute -inset-1.5 rounded-full border border-rose-500/30 animate-ping pointer-events-none" />
                   </div>
-
-                  <div className="absolute top-3 left-3 bg-slate-950/80 border border-slate-800 px-2.5 py-1 rounded-lg text-xs text-slate-300 flex items-center gap-1.5 font-medium">
-                    <span>{meeting.customerName}</span>
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  <h3 className="text-base font-semibold text-white mb-1.5">
+                    Waiting for attendees to join...
+                  </h3>
+                  <p className="text-xs text-slate-400 max-w-sm mb-5 leading-relaxed">
+                    No other participants have joined this session yet. Share the invite link with the customer or team member to join.
+                  </p>
+                  
+                  <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 max-w-md w-full flex items-center justify-between gap-3 mb-3 shadow-sm">
+                    <span className="text-xs font-mono text-slate-300 truncate select-all">{meetingLink}</span>
+                    <button
+                      onClick={handleCopyLink}
+                      className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold shrink-0 flex items-center gap-1.5 transition-colors shadow-sm"
+                    >
+                      {copiedLink ? <CheckCircle2 className="w-3.5 h-3.5 text-white" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>{copiedLink ? 'Copied!' : 'Copy Link'}</span>
+                    </button>
                   </div>
-
-                  <div className="absolute top-3 right-3 bg-slate-950/80 border border-slate-800 px-2 py-0.5 rounded text-[10px] text-slate-400 font-mono">
-                    HD 1080p · Opus 48kHz
-                  </div>
-
-                  <div className="absolute bottom-3 left-3 bg-slate-950/80 border border-slate-800 px-2.5 py-1.5 rounded-lg flex items-center gap-2 text-xs">
-                    <Mic className="w-4 h-4 text-emerald-400" />
-                    <span className="text-xs text-slate-300">Speaking...</span>
-                  </div>
+                  <span className="text-[11px] text-slate-500 flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    When someone opens the link, their tile will appear here instantly.
+                  </span>
                 </div>
-              </div>
+              ) : (
+                remoteParticipants.map((p) => (
+                  <div
+                    key={p.id}
+                    className="relative bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex items-center justify-center shadow-lg transition-all"
+                  >
+                    <div className="w-full h-full relative flex items-center justify-center bg-gradient-to-b from-slate-900 to-slate-950">
+                      <div className="flex flex-col items-center">
+                        <div className={`w-24 h-24 rounded-full ${p.avatarColor || 'bg-blue-600'} flex items-center justify-center text-3xl font-bold text-white shadow-xl mb-3`}>
+                          {p.name.split(' ').map((n) => n[0]).slice(0, 2).join('')}
+                        </div>
+                        <span className="text-base font-semibold text-white">{p.name}</span>
+                        <span className="text-xs text-emerald-400 font-mono mt-0.5">
+                          {p.role || 'Attendee'} · Connected
+                        </span>
+                      </div>
+
+                      <div className="absolute top-3 left-3 bg-slate-950/80 border border-slate-800 px-2.5 py-1 rounded-lg text-xs text-slate-300 flex items-center gap-1.5 font-medium">
+                        <span>{p.name}</span>
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                      </div>
+
+                      <div className="absolute top-3 right-3 bg-slate-950/80 border border-slate-800 px-2 py-0.5 rounded text-[10px] text-slate-400 font-mono">
+                        HD 1080p · Opus 48kHz
+                      </div>
+
+                      <div className="absolute bottom-3 left-3 bg-slate-950/80 border border-slate-800 px-2.5 py-1.5 rounded-lg flex items-center gap-2 text-xs">
+                        {p.isMuted ? (
+                          <MicOff className="w-3.5 h-3.5 text-rose-400" />
+                        ) : (
+                          <Mic className="w-3.5 h-3.5 text-emerald-400" />
+                        )}
+                        <span className="text-xs text-slate-300">{p.isMuted ? 'Muted' : 'Connected'}</span>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           )}
 
@@ -983,14 +1085,14 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
                     <div
                       key={msg.id}
                       className={`p-3 rounded-xl border ${
-                        msg.isLocal
+                        msg.senderId === localParticipantId
                           ? 'bg-rose-950/40 border-rose-900/60 ml-4'
                           : 'bg-slate-950 border-slate-800 mr-4'
                       }`}
                     >
                       <div className="flex items-center justify-between mb-1">
-                        <span className="font-semibold text-white">{msg.sender}</span>
-                        <span className="text-[10px] text-slate-400">{msg.time}</span>
+                        <span className="font-semibold text-white">{msg.senderName}</span>
+                        <span className="text-[10px] text-slate-400">{msg.timestamp}</span>
                       </div>
                       <p className="text-slate-200 leading-relaxed">{msg.text}</p>
                     </div>
@@ -1073,6 +1175,7 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
                 <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-1 text-slate-400">
                   <div className="text-white font-medium">Session Diagnostics</div>
                   <div>Media Region: <span className="text-emerald-400 font-mono">ap-south-1 (Mumbai)</span></div>
+                  <div>Active Attendees: <span className="text-emerald-400 font-mono">{remoteParticipants.length + 1} connected</span></div>
                   <div>Protocol: <span className="text-slate-200 font-mono">WebRTC SRTP / DTLS</span></div>
                   <div>Audio Codec: <span className="text-slate-200 font-mono">Opus 48kHz Stereo</span></div>
                   <div>Resolution: <span className="text-slate-200 font-mono">1280x720 30fps</span></div>
@@ -1084,7 +1187,7 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
       </div>
 
       {/* --------------------------------------------------------------------- */}
-      {/* 4. Bottom Meeting Control Bar (Google Meet Style) */}
+      {/* 4. Bottom Meeting Control Bar */}
       {/* --------------------------------------------------------------------- */}
       <footer className="h-18 bg-slate-900 border-t border-slate-800 px-4 md:px-8 flex items-center justify-between shrink-0">
         {/* Left: Audio & Video Media Toggles */}
@@ -1248,13 +1351,15 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
           </button>
 
           {/* Organizer End for All Button */}
-          <button
-            onClick={handleEndMeetingForAll}
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-semibold transition-colors shadow-sm"
-            title="End Meeting for All & Generate AI Summary"
-          >
-            <span>End Call</span>
-          </button>
+          {isLocalHost && (
+            <button
+              onClick={handleEndMeetingForAll}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-semibold transition-colors shadow-sm"
+              title="End Meeting for All & Generate AI Summary"
+            >
+              <span>End Call</span>
+            </button>
+          )}
         </div>
       </footer>
     </div>

@@ -12,7 +12,7 @@
  */
 
 export function getAppBaseUrl(): string {
-  // 1. Explicit public APP_URL (ignore internal AI Studio *.run.app containers)
+  // 1. Explicit public APP_URL
   const envAppUrl = typeof process !== 'undefined' ? process.env?.APP_URL : undefined;
   if (
     envAppUrl &&
@@ -33,21 +33,21 @@ export function getAppBaseUrl(): string {
     }
   }
 
-  // 3. Browser runtime check: only use origin if not in private Google sandbox
+  // 3. Browser runtime: dynamically use current window origin
   if (typeof window !== 'undefined' && window.location?.origin) {
     const hostname = window.location.hostname;
-    const isAiStudioSandbox =
-      hostname.includes('.run.app') ||
-      hostname.includes('aistudio.google') ||
-      hostname.includes('cloudshell');
-
-    if (!isAiStudioSandbox && hostname !== '') {
+    // In AI Studio internal dev container (ais-dev-*), convert to public shared preview (ais-pre-*)
+    // so external devices/participants can join directly without Google 403 applet-auth-bridge error
+    if (hostname.startsWith('ais-dev-')) {
+      return window.location.origin.replace('ais-dev-', 'ais-pre-');
+    }
+    // Localhost, Vercel, or custom domains: return the exact working origin
+    if (hostname !== '') {
       return window.location.origin;
     }
   }
 
-  // 4. Default public production deployment (open to all without Google 403)
-  return 'https://meetingnext-eta.vercel.app';
+  return '';
 }
 
 /**
@@ -57,5 +57,5 @@ export function generateMeetingLink(roomId: string): string {
   const base = getAppBaseUrl();
   const cleanId = roomId.replace(/^https?:\/\/[^\/]+\/(room\/)?/, '').replace(/^\/+/, '');
   const finalRoomId = cleanId.startsWith('room/') ? cleanId.substring(5) : cleanId;
-  return `${base}/room/${finalRoomId}`;
+  return base ? `${base}/room/${finalRoomId}` : `/room/${finalRoomId}`;
 }

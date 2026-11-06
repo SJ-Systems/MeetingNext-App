@@ -781,6 +781,85 @@ async function startServer() {
     }
   });
 
+  // Real-time Room Participants & Roster Synchronization
+  app.get('/api/meetingnext/meetings/:meetingId/participants', (req: Request, res: Response) => {
+    try {
+      const participants = meetingNextBackend.getRoomParticipants(req.params.meetingId);
+      res.json(participants);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/meetingnext/meetings/:meetingId/participants', (req: Request, res: Response) => {
+    try {
+      const { id, name, role, isHost, avatarColor, isMuted, isVideoOff, isScreenSharing } = req.body;
+      if (!id || !name) {
+        return res.status(400).json({ error: 'id and name are required' });
+      }
+      const participants = meetingNextBackend.joinRoom(req.params.meetingId, {
+        id,
+        name,
+        role: role || 'Participant',
+        isHost: !!isHost,
+        avatarColor: avatarColor || 'bg-blue-600',
+        isMuted: !!isMuted,
+        isVideoOff: !!isVideoOff,
+        isScreenSharing: !!isScreenSharing,
+      });
+      res.status(201).json(participants);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/meetingnext/meetings/:meetingId/participants/:participantId/heartbeat', (req: Request, res: Response) => {
+    try {
+      meetingNextBackend.heartbeatRoom(req.params.meetingId, req.params.participantId);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/api/meetingnext/meetings/:meetingId/participants/:participantId', (req: Request, res: Response) => {
+    try {
+      const participants = meetingNextBackend.leaveRoom(req.params.meetingId, req.params.participantId);
+      res.json({ success: true, participants });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Room In-Meeting Chat Messages
+  app.get('/api/meetingnext/meetings/:meetingId/messages', (req: Request, res: Response) => {
+    try {
+      const messages = meetingNextBackend.getRoomMessages(req.params.meetingId);
+      res.json(messages);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/meetingnext/meetings/:meetingId/messages', (req: Request, res: Response) => {
+    try {
+      const { senderId, senderName, senderRole, text, isHost } = req.body;
+      if (!text || !senderName) {
+        return res.status(400).json({ error: 'text and senderName are required' });
+      }
+      const msg = meetingNextBackend.sendRoomMessage(req.params.meetingId, {
+        senderId: senderId || `usr_${Date.now()}`,
+        senderName,
+        senderRole: senderRole || 'Attendee',
+        text,
+        isHost: !!isHost,
+      });
+      res.status(201).json(msg);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // 5. Complete meeting & generate AI transcript / summary with Gemini / AWS
   app.post('/api/meetingnext/meetings/:id/complete', async (req: Request, res: Response) => {
     try {

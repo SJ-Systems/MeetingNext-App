@@ -24,7 +24,7 @@ import {
   INITIAL_CALL_HISTORY,
 } from './db/meetingNextStore';
 import { meetingNextApi, setApiCurrentUser, onUnauthorized } from './services/meetingNextApi';
-import { CheckCircle2, AlertCircle } from 'lucide-react';
+import { CheckCircle2, AlertCircle, Video, Users } from 'lucide-react';
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState<MeetingNextPage>('home');
@@ -57,6 +57,12 @@ export default function App() {
 
   // Active Live Video Room
   const [activeMeetingRoom, setActiveMeetingRoom] = useState<ScheduledMeeting | null>(null);
+
+  // Guest Join State for Link Visitors
+  const [guestJoinProfile, setGuestJoinProfile] = useState<{ id: string; name: string; role: string } | null>(null);
+  const [isGuestJoining, setIsGuestJoining] = useState(false);
+  const [guestNameInput, setGuestNameInput] = useState('');
+  const [isDirectGuestRoute, setIsDirectGuestRoute] = useState(false);
 
   // Reschedule Target Modal
   const [rescheduleTarget, setRescheduleTarget] = useState<ScheduledMeeting | null>(null);
@@ -115,6 +121,7 @@ export default function App() {
       }
 
       if (targetRoomId) {
+        setIsDirectGuestRoute(true);
         // Find existing scheduled meeting
         const existing =
           upcomingMeetings.find((m) => m.id === targetRoomId || m.meetingLink.includes(targetRoomId!)) ||
@@ -122,6 +129,7 @@ export default function App() {
 
         if (existing) {
           setActiveMeetingRoom(existing);
+          setGuestNameInput(existing.customerName || '');
         } else {
           // Construct live attendee meeting session for direct room URL
           const directMeeting: ScheduledMeeting = {
@@ -139,6 +147,7 @@ export default function App() {
             sentViaGmail: true,
           };
           setActiveMeetingRoom(directMeeting);
+          setGuestNameInput('');
         }
       }
     };
@@ -183,15 +192,19 @@ export default function App() {
 
   // Handlers
   const handleJoinMeeting = (meeting: ScheduledMeeting) => {
+    setIsDirectGuestRoute(false);
+    setIsGuestJoining(true);
     setActiveMeetingRoom(meeting);
     if (typeof window !== 'undefined') {
-      const targetId = meeting.id.startsWith('mtg_') ? `mtg-chime-${meeting.id.substring(4)}` : meeting.id;
-      window.history.pushState({}, '', `/room/${targetId}`);
+      window.history.pushState({}, '', `/room/${meeting.id}`);
     }
   };
 
   const handleLeaveMeetingRoom = () => {
     setActiveMeetingRoom(null);
+    setIsGuestJoining(false);
+    setIsDirectGuestRoute(false);
+    setGuestJoinProfile(null);
     if (typeof window !== 'undefined' && (window.location.pathname.startsWith('/room/') || window.location.search.includes('room='))) {
       window.history.replaceState({}, '', '/');
     }
@@ -284,12 +297,82 @@ export default function App() {
     }
   };
 
-  // Direct access for participants joining via a meeting link
-  if (activeMeetingRoom && !currentUser) {
+  // Direct access for participants joining via a meeting link (e.g. from SMS, Gmail, or shared URL)
+  if (activeMeetingRoom && (!currentUser || isDirectGuestRoute)) {
+    if (!isGuestJoining) {
+      return (
+        <div className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center p-4">
+          <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-3xl p-6 md:p-8 space-y-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center gap-2.5">
+              <div className="w-10 h-10 rounded-xl bg-rose-600 flex items-center justify-center text-white font-bold shadow-md">
+                <Video className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="font-bold text-white text-base">MeetingNext Video Portal</h2>
+                <span className="text-[11px] font-mono text-emerald-400">ap-south-1 (Mumbai) Encrypted</span>
+              </div>
+            </div>
+
+            <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-1.5">
+              <span className="text-[11px] text-rose-400 font-semibold uppercase tracking-wider">Scheduled Session:</span>
+              <h3 className="text-base font-semibold text-white">{activeMeetingRoom.reason}</h3>
+              <p className="text-xs text-slate-400">
+                Host: <span className="text-slate-200">Sarthak Jain, CFA (Senior RM)</span>
+              </p>
+              <div className="text-[11px] text-slate-500 font-mono pt-1">
+                Room ID: {activeMeetingRoom.id}
+              </div>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const nameToUse = guestNameInput.trim() || activeMeetingRoom.customerName || 'Guest Attendee';
+                setGuestJoinProfile({
+                  id: `guest_${Date.now()}`,
+                  name: nameToUse,
+                  role: 'Customer / Guest',
+                });
+                setIsGuestJoining(true);
+              }}
+              className="space-y-4"
+            >
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                  Enter Your Display Name
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={guestNameInput}
+                  onChange={(e) => setGuestNameInput(e.target.value)}
+                  placeholder={activeMeetingRoom.customerName || 'e.g. John Doe'}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-rose-500"
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-3.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-sm font-semibold transition-colors shadow-lg cursor-pointer flex items-center justify-center gap-2"
+              >
+                <Video className="w-4 h-4" />
+                <span>Join Video Room</span>
+              </button>
+            </form>
+
+            <p className="text-[11px] text-slate-500 text-center">
+              Standard WebRTC 256-bit secure end-to-end media in ap-south-1 (Mumbai).
+            </p>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <MeetingRoomModal
         meeting={activeMeetingRoom}
         isOpen={true}
+        currentUser={guestJoinProfile}
         onLeaveMeeting={handleLeaveMeetingRoom}
         onCompleteMeeting={handleCompleteActiveMeeting}
       />
@@ -392,6 +475,7 @@ export default function App() {
         <MeetingRoomModal
           meeting={activeMeetingRoom}
           isOpen={!!activeMeetingRoom}
+          currentUser={currentUser}
           onLeaveMeeting={handleLeaveMeetingRoom}
           onCompleteMeeting={handleCompleteActiveMeeting}
         />

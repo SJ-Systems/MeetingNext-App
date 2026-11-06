@@ -41,6 +41,28 @@ export const SARTHAK_JAIN_USER: AuthUser = {
   token: 'session_sarthak_jain_cfa_jwt_token_2026',
 };
 
+export interface ActiveRoomParticipant {
+  id: string;
+  name: string;
+  role: string;
+  isHost: boolean;
+  avatarColor: string;
+  isMuted: boolean;
+  isVideoOff: boolean;
+  isScreenSharing: boolean;
+  lastHeartbeat: number;
+}
+
+export interface RoomChatMessage {
+  id: string;
+  senderId: string;
+  senderName: string;
+  senderRole: string;
+  text: string;
+  timestamp: string;
+  isHost?: boolean;
+}
+
 class MeetingNextBackendStore {
   private upcomingMeetings: ScheduledMeeting[] = [...INITIAL_UPCOMING_MEETINGS];
   private pastMeetings: ScheduledMeeting[] = [...INITIAL_PAST_MEETINGS];
@@ -49,6 +71,8 @@ class MeetingNextBackendStore {
   private aiData: Record<string, MeetingAiDetails> = { ...MOCK_AI_DATA };
   private dispatchLogs: DispatchReceipt[] = [];
   private currentUser: AuthUser | null = SARTHAK_JAIN_USER;
+  private roomParticipants: Map<string, ActiveRoomParticipant[]> = new Map();
+  private roomMessages: Map<string, RoomChatMessage[]> = new Map();
 
   // Amazon Connect Configuration
   private connectConfig: AmazonConnectInstanceConfig = {
@@ -169,13 +193,16 @@ class MeetingNextBackendStore {
   }
 
   getMeetingById(id: string): ScheduledMeeting | undefined {
+    if (!id) return undefined;
+    const cleanId = id.replace(/^https?:\/\/[^\/]+\/(room\/)?/, '').replace(/^\/+/, '').replace(/^room\//, '');
     return (
-      this.upcomingMeetings.find((m) => m.id === id) ||
-      this.pastMeetings.find((m) => m.id === id)
+      this.upcomingMeetings.find((m) => m.id === cleanId || m.id === id || m.meetingLink.includes(cleanId) || m.meetingLink.includes(id)) ||
+      this.pastMeetings.find((m) => m.id === cleanId || m.id === id || m.meetingLink.includes(cleanId) || m.meetingLink.includes(id))
     );
   }
 
   scheduleMeeting(data: {
+    id?: string;
     customerName: string;
     customerNumber: string;
     customerEmail?: string;
@@ -184,8 +211,8 @@ class MeetingNextBackendStore {
     time: string;
     durationMinutes?: number;
   }) {
-    const meetingId = `mtg_${Date.now()}`;
-    const generatedLink = generateMeetingLink(`mtg-chime-${Math.floor(1000 + Math.random() * 9000)}`);
+    const meetingId = data.id || `mtg-chime-${Math.floor(1000 + Math.random() * 9000)}`;
+    const generatedLink = generateMeetingLink(meetingId);
     const email = data.customerEmail || `${data.customerName.toLowerCase().replace(/\s+/g, '.')}@gmail.com`;
 
     const newMeeting: ScheduledMeeting = {
@@ -378,6 +405,69 @@ class MeetingNextBackendStore {
 
   getDispatchLogs() {
     return this.dispatchLogs;
+  }
+
+  // Room Participants Management
+  getRoomParticipants(roomId: string): ActiveRoomParticipant[] {
+    const cleanId = roomId.replace(/^https?:\/\/[^\/]+\/(room\/)?/, '').replace(/^\/+/, '').replace(/^room\//, '');
+    const now = Date.now();
+    const list = this.roomParticipants.get(cleanId) || [];
+    // Keep participants active if heartbeat within last 20 seconds
+    const active = list.filter((p) => now - p.lastHeartbeat < 20000);
+    this.roomParticipants.set(cleanId, active);
+    return active;
+  }
+
+  joinRoom(roomId: string, participant: Omit<ActiveRoomParticipant, 'lastHeartbeat'>): ActiveRoomParticipant[] {
+    const cleanId = roomId.replace(/^https?:\/\/[^\/]+\/(room\/)?/, '').replace(/^\/+/, '').replace(/^room\//, '');
+    const list = this.getRoomParticipants(cleanId);
+    const existingIdx = list.findIndex((p) => p.id === participant.id);
+    const updated: ActiveRoomParticipant = {
+      ...participant,
+      lastHeartbeat: Date.now(),
+    };
+    if (existingIdx !== -1) {
+      list[existingIdx] = updated;
+    } else {
+      list.push(updated);
+    }
+    this.roomParticipants.set(cleanId, list);
+    return list;
+  }
+
+  heartbeatRoom(roomId: string, participantId: string): void {
+    const cleanId = roomId.replace(/^https?:\/\/[^\/]+\/(room\/)?/, '').replace(/^\/+/, '').replace(/^room\//, '');
+    const list = this.getRoomParticipants(cleanId);
+    const p = list.find((item) => item.id === participantId);
+    if (p) {
+      p.lastHeartbeat = Date.now();
+    }
+  }
+
+  leaveRoom(roomId: string, participantId: string): ActiveRoomParticipant[] {
+    const cleanId = roomId.replace(/^https?:\/\/[^\/]+\/(room\/)?/, '').replace(/^\/+/, '').replace(/^room\//, '');
+    const list = this.getRoomParticipants(cleanId);
+    const filtered = list.filter((p) => p.id !== participantId);
+    this.roomParticipants.set(cleanId, filtered);
+    return filtered;
+  }
+
+  getRoomMessages(roomId: string): RoomChatMessage[] {
+    const cleanId = roomId.replace(/^https?:\/\/[^\/]+\/(room\/)?/, '').replace(/^\/+/, '').replace(/^room\//, '');
+    return this.roomMessages.get(cleanId) || [];
+  }
+
+  sendRoomMessage(roomId: string, message: Omit<RoomChatMessage, 'id' | 'timestamp'>): RoomChatMessage {
+    const cleanId = roomId.replace(/^https?:\/\/[^\/]+\/(room\/)?/, '').replace(/^\/+/, '').replace(/^room\//, '');
+    const msgs = this.roomMessages.get(cleanId) || [];
+    const newMsg: RoomChatMessage = {
+      ...message,
+      id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+    msgs.push(newMsg);
+    this.roomMessages.set(cleanId, msgs);
+    return newMsg;
   }
 }
 

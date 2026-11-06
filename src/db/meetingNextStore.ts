@@ -17,7 +17,7 @@ export const INITIAL_CUSTOMERS_LIST: CustomerInfo[] = [
 
 export const INITIAL_UPCOMING_MEETINGS: ScheduledMeeting[] = [
   {
-    id: 'mtg_001',
+    id: 'mtg-chime-9082',
     customerName: 'David Sterling',
     customerNumber: '+1 (415) 890-4412',
     customerEmail: 'david.sterling@aurora.io',
@@ -31,7 +31,7 @@ export const INITIAL_UPCOMING_MEETINGS: ScheduledMeeting[] = [
     sentViaGmail: true,
   },
   {
-    id: 'mtg_002',
+    id: 'mtg-chime-9140',
     customerName: 'Sophia Chen',
     customerNumber: '+1 (650) 412-8890',
     customerEmail: 'sophia.chen@nexusbiotech.com',
@@ -45,7 +45,7 @@ export const INITIAL_UPCOMING_MEETINGS: ScheduledMeeting[] = [
     sentViaGmail: true,
   },
   {
-    id: 'mtg_003',
+    id: 'mtg-chime-9250',
     customerName: 'Robert Tanaka',
     customerNumber: '+1 (212) 555-8910',
     customerEmail: 'r.tanaka@tanakacapital.com',
