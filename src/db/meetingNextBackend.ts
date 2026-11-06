@@ -16,6 +16,7 @@ import {
   INITIAL_CALL_HISTORY,
   MOCK_AI_DATA
 } from './meetingNextStore';
+import { generateMeetingLink } from '../utils/appUrl';
 
 export interface DispatchReceipt {
   channel: 'sms' | 'gmail';
@@ -184,7 +185,7 @@ class MeetingNextBackendStore {
     durationMinutes?: number;
   }) {
     const meetingId = `mtg_${Date.now()}`;
-    const generatedLink = `https://meetingnext.app/room/mtg-chime-${Math.floor(1000 + Math.random() * 9000)}`;
+    const generatedLink = generateMeetingLink(`mtg-chime-${Math.floor(1000 + Math.random() * 9000)}`);
     const email = data.customerEmail || `${data.customerName.toLowerCase().replace(/\s+/g, '.')}@gmail.com`;
 
     const newMeeting: ScheduledMeeting = {

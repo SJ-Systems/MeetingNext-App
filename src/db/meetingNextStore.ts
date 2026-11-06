@@ -5,6 +5,7 @@ import {
   HomeInsights,
   CustomerInfo
 } from '../types/meetingnext';
+import { generateMeetingLink } from '../utils/appUrl';
 
 export const INITIAL_CUSTOMERS_LIST: CustomerInfo[] = [
   { id: 'c1', name: 'David Sterling', number: '+1 (415) 890-4412', email: 'david.sterling@aurora.io' },
@@ -24,7 +25,7 @@ export const INITIAL_UPCOMING_MEETINGS: ScheduledMeeting[] = [
     date: 'Today',
     time: '11:30 AM',
     durationMinutes: 30,
-    meetingLink: 'https://meetingnext.app/room/mtg-chime-9082',
+    meetingLink: generateMeetingLink('mtg-chime-9082'),
     status: 'upcoming',
     sentViaMessage: true,
     sentViaGmail: true,
@@ -38,7 +39,7 @@ export const INITIAL_UPCOMING_MEETINGS: ScheduledMeeting[] = [
     date: 'Today',
     time: '02:00 PM',
     durationMinutes: 20,
-    meetingLink: 'https://meetingnext.app/room/mtg-chime-9140',
+    meetingLink: generateMeetingLink('mtg-chime-9140'),
     status: 'upcoming',
     sentViaMessage: true,
     sentViaGmail: true,
@@ -52,7 +53,7 @@ export const INITIAL_UPCOMING_MEETINGS: ScheduledMeeting[] = [
     date: 'Tomorrow',
     time: '10:00 AM',
     durationMinutes: 25,
-    meetingLink: 'https://meetingnext.app/room/mtg-chime-9250',
+    meetingLink: generateMeetingLink('mtg-chime-9250'),
     status: 'upcoming',
     sentViaMessage: true,
     sentViaGmail: true,
@@ -70,7 +71,7 @@ export const INITIAL_PAST_MEETINGS: ScheduledMeeting[] = [
     time: '03:15 PM',
     durationMinutes: 30,
     actualDuration: '26 mins',
-    meetingLink: 'https://meetingnext.app/room/mtg-chime-8810',
+    meetingLink: generateMeetingLink('mtg-chime-8810'),
     status: 'completed',
     sentViaMessage: true,
     sentViaGmail: true,
@@ -86,7 +87,7 @@ export const INITIAL_PAST_MEETINGS: ScheduledMeeting[] = [
     time: '11:00 AM',
     durationMinutes: 20,
     actualDuration: '18 mins',
-    meetingLink: 'https://meetingnext.app/room/mtg-chime-8720',
+    meetingLink: generateMeetingLink('mtg-chime-8720'),
     status: 'completed',
     sentViaMessage: true,
     sentViaGmail: true,
@@ -102,7 +103,7 @@ export const INITIAL_PAST_MEETINGS: ScheduledMeeting[] = [
     time: '04:30 PM',
     durationMinutes: 35,
     actualDuration: '34 mins',
-    meetingLink: 'https://meetingnext.app/room/mtg-chime-8650',
+    meetingLink: generateMeetingLink('mtg-chime-8650'),
     status: 'completed',
     sentViaMessage: true,
     sentViaGmail: true,

@@ -101,6 +101,53 @@ export default function App() {
     };
   }, []);
 
+  // Detect direct room URL access e.g. /room/mtg-chime-7165 or ?room=mtg-chime-7165
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const checkUrlForMeetingRoom = () => {
+      const pathname = window.location.pathname;
+      const searchParams = new URLSearchParams(window.location.search);
+      let targetRoomId: string | null = searchParams.get('room');
+
+      if (!targetRoomId && pathname.startsWith('/room/')) {
+        targetRoomId = pathname.substring(6).replace(/\/$/, '');
+      }
+
+      if (targetRoomId) {
+        // Find existing scheduled meeting
+        const existing =
+          upcomingMeetings.find((m) => m.id === targetRoomId || m.meetingLink.includes(targetRoomId!)) ||
+          pastMeetings.find((m) => m.id === targetRoomId || m.meetingLink.includes(targetRoomId!));
+
+        if (existing) {
+          setActiveMeetingRoom(existing);
+        } else {
+          // Construct live attendee meeting session for direct room URL
+          const directMeeting: ScheduledMeeting = {
+            id: targetRoomId,
+            customerName: 'Customer Attendee',
+            customerNumber: '+1 (415) 890-4412',
+            customerEmail: 'customer@client.com',
+            reason: 'Banking Video Consultation',
+            date: 'Today',
+            time: 'Now',
+            durationMinutes: 30,
+            meetingLink: window.location.href,
+            status: 'upcoming',
+            sentViaMessage: true,
+            sentViaGmail: true,
+          };
+          setActiveMeetingRoom(directMeeting);
+        }
+      }
+    };
+
+    checkUrlForMeetingRoom();
+    window.addEventListener('popstate', checkUrlForMeetingRoom);
+    return () => window.removeEventListener('popstate', checkUrlForMeetingRoom);
+  }, [upcomingMeetings, pastMeetings]);
+
   // Sync data with backend on load
   const refreshBackendData = async () => {
     try {
@@ -137,6 +184,17 @@ export default function App() {
   // Handlers
   const handleJoinMeeting = (meeting: ScheduledMeeting) => {
     setActiveMeetingRoom(meeting);
+    if (typeof window !== 'undefined') {
+      const targetId = meeting.id.startsWith('mtg_') ? `mtg-chime-${meeting.id.substring(4)}` : meeting.id;
+      window.history.pushState({}, '', `/room/${targetId}`);
+    }
+  };
+
+  const handleLeaveMeetingRoom = () => {
+    setActiveMeetingRoom(null);
+    if (typeof window !== 'undefined' && (window.location.pathname.startsWith('/room/') || window.location.search.includes('room='))) {
+      window.history.replaceState({}, '', '/');
+    }
   };
 
   const handleOpenReschedule = (meeting: ScheduledMeeting) => {
@@ -226,6 +284,18 @@ export default function App() {
     }
   };
 
+  // Direct access for participants joining via a meeting link
+  if (activeMeetingRoom && !currentUser) {
+    return (
+      <MeetingRoomModal
+        meeting={activeMeetingRoom}
+        isOpen={true}
+        onLeaveMeeting={handleLeaveMeetingRoom}
+        onCompleteMeeting={handleCompleteActiveMeeting}
+      />
+    );
+  }
+
   if (!currentUser) {
     return (
       <LoginPage
@@ -293,6 +363,7 @@ export default function App() {
           <ScheduleMeetingPage
             onMeetingScheduled={handleScheduleNewMeeting}
             onNavigateToMeetings={() => setCurrentPage('my_meetings')}
+            onJoinMeeting={handleJoinMeeting}
           />
         )}
 
@@ -321,7 +392,7 @@ export default function App() {
         <MeetingRoomModal
           meeting={activeMeetingRoom}
           isOpen={!!activeMeetingRoom}
-          onLeaveMeeting={() => setActiveMeetingRoom(null)}
+          onLeaveMeeting={handleLeaveMeetingRoom}
           onCompleteMeeting={handleCompleteActiveMeeting}
         />
       )}

@@ -19,6 +19,7 @@ import {
   INITIAL_CALL_HISTORY,
   MOCK_AI_DATA,
 } from '../db/meetingNextStore';
+import { generateMeetingLink } from '../utils/appUrl';
 
 export interface SchedulePayload {
   customerName: string;
@@ -199,7 +200,7 @@ class MeetingNextApiService {
     } catch (e) {
       console.warn('Backend schedule fallback:', e);
       const meetingId = `mtg_${Date.now()}`;
-      const generatedLink = `https://meetingnext.app/room/mtg-chime-${Math.floor(1000 + Math.random() * 9000)}`;
+      const generatedLink = generateMeetingLink(`mtg-chime-${Math.floor(1000 + Math.random() * 9000)}`);
       const meeting: ScheduledMeeting = {
         id: meetingId,
         customerName: payload.customerName,
@@ -251,7 +252,7 @@ class MeetingNextApiService {
         date: updates.date || 'Tomorrow',
         time: updates.time || '11:00 AM',
         durationMinutes: updates.durationMinutes || 30,
-        meetingLink: `https://meetingnext.app/room/mtg-chime-${id}`,
+        meetingLink: generateMeetingLink(`mtg-chime-${id}`),
         status: 'upcoming',
         sentViaMessage: true,
         sentViaGmail: true,

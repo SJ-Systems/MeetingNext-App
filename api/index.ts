@@ -11,6 +11,7 @@ import {
   sendEmailNotification,
   generateAiMeetingInsights,
 } from '../src/services/awsServiceIntegration';
+import { generateMeetingLink } from '../src/utils/appUrl';
 
 const app = express();
 app.use(express.json());
@@ -328,7 +329,7 @@ app.post('/api/meetingnext/dispatch/sms', async (req: Request, res: Response) =>
   const smsRes = await sendSmsNotification({
     to: to || '+91 98200 12345',
     customerName: customerName || 'Valued Customer',
-    meetingLink: meetingLink || 'https://meetingnext.app',
+    meetingLink: meetingLink || generateMeetingLink(`mtg-chime-${Date.now()}`),
     meetingDate: meetingDate || 'Tomorrow',
     meetingTime: meetingTime || '11:00 AM',
     reason: reason || 'Banking Service',
@@ -341,7 +342,7 @@ app.post('/api/meetingnext/dispatch/gmail', async (req: Request, res: Response) 
   const emailRes = await sendEmailNotification({
     to: to || 'customer@gmail.com',
     customerName: customerName || 'Valued Customer',
-    meetingLink: meetingLink || 'https://meetingnext.app',
+    meetingLink: meetingLink || generateMeetingLink(`mtg-chime-${Date.now()}`),
     meetingDate: meetingDate || 'Tomorrow',
     meetingTime: meetingTime || '11:00 AM',
     reason: reason || 'Banking Consultation',

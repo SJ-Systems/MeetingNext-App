@@ -13,7 +13,8 @@ import {
   Clock,
   Phone,
   Send,
-  Share2
+  Share2,
+  Video
 } from 'lucide-react';
 import { ScheduledMeeting, MeetingReason } from '../../types/meetingnext';
 import { INITIAL_CUSTOMERS_LIST } from '../../db/meetingNextStore';
@@ -22,11 +23,13 @@ import { meetingNextApi } from '../../services/meetingNextApi';
 interface ScheduleMeetingPageProps {
   onMeetingScheduled: (meeting: ScheduledMeeting) => void;
   onNavigateToMeetings: () => void;
+  onJoinMeeting?: (meeting: ScheduledMeeting) => void;
 }
 
 export const ScheduleMeetingPage: React.FC<ScheduleMeetingPageProps> = ({
   onMeetingScheduled,
   onNavigateToMeetings,
+  onJoinMeeting,
 }) => {
   // Form fields
   const [customerName, setCustomerName] = useState('');
@@ -262,14 +265,35 @@ export const ScheduleMeetingPage: React.FC<ScheduleMeetingPageProps> = ({
                   <Copy className="w-3.5 h-3.5" />
                   <span>{copiedLink ? 'Copied!' : 'Copy Link'}</span>
                 </button>
+                {onJoinMeeting && (
+                  <button
+                    type="button"
+                    onClick={() => onJoinMeeting(scheduledResult)}
+                    className="px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white rounded-full font-semibold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                    title="Launch into this room"
+                  >
+                    <Video className="w-3.5 h-3.5" />
+                    <span>Open Room</span>
+                  </button>
+                )}
               </div>
             </div>
 
-            <div className="flex items-center justify-end gap-3 pt-1">
+            <div className="flex flex-wrap items-center justify-end gap-3 pt-1">
+              {onJoinMeeting && scheduledResult && (
+                <button
+                  type="button"
+                  onClick={() => onJoinMeeting(scheduledResult)}
+                  className="px-5 py-2.5 bg-rose-500 hover:bg-rose-600 active:scale-95 text-white rounded-full text-xs font-semibold shadow-sm shadow-rose-200 transition-all flex items-center gap-1.5"
+                >
+                  <Video className="w-3.5 h-3.5" />
+                  <span>Join Room Now</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={onNavigateToMeetings}
-                className="px-5 py-2.5 bg-rose-500 hover:bg-rose-600 text-white rounded-full text-xs font-semibold shadow-xs transition-colors flex items-center gap-1.5 active:scale-95"
+                className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full text-xs font-semibold shadow-xs transition-colors flex items-center gap-1.5 active:scale-95"
               >
                 <span>View in My Meetings</span>
                 <ArrowRight className="w-3.5 h-3.5" />
