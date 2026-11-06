@@ -597,6 +597,8 @@ class MeetingNextApiService {
       return {
         success: true,
         meetingId,
+        applicationMeetingId: meetingId,
+        chimeMeetingId: `chime-meet-${meetingId}`,
         isOrganizer: true,
         provider: 'Amazon Chime SDK WebRTC Engine (ap-south-1)',
         chimeMeeting: {

@@ -12,28 +12,7 @@
  */
 
 export function getAppBaseUrl(): string {
-  // 1. Explicit public APP_URL
-  const envAppUrl = typeof process !== 'undefined' ? process.env?.APP_URL : undefined;
-  if (
-    envAppUrl &&
-    !envAppUrl.includes('.run.app') &&
-    !envAppUrl.includes('aistudio') &&
-    envAppUrl.trim() !== ''
-  ) {
-    return envAppUrl.replace(/\/$/, '');
-  }
-
-  // 2. Vercel deployment variables
-  if (typeof process !== 'undefined') {
-    if (process.env?.VERCEL_PROJECT_PRODUCTION_URL) {
-      return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL.replace(/\/$/, '')}`;
-    }
-    if (process.env?.VERCEL_URL) {
-      return `https://${process.env.VERCEL_URL.replace(/\/$/, '')}`;
-    }
-  }
-
-  // 3. Browser runtime: dynamically use current window origin
+  // 1. Browser runtime: dynamically use current window origin so link sharing always matches actual host
   if (typeof window !== 'undefined' && window.location?.origin) {
     const hostname = window.location.hostname;
     // In AI Studio internal dev container (ais-dev-*), convert to public shared preview (ais-pre-*)
@@ -44,6 +23,27 @@ export function getAppBaseUrl(): string {
     // Localhost, Vercel, or custom domains: return the exact working origin
     if (hostname !== '') {
       return window.location.origin;
+    }
+  }
+
+  // 2. Explicit public APP_URL (server-side)
+  const envAppUrl = typeof process !== 'undefined' ? process.env?.APP_URL : undefined;
+  if (
+    envAppUrl &&
+    !envAppUrl.includes('.run.app') &&
+    !envAppUrl.includes('aistudio') &&
+    envAppUrl.trim() !== ''
+  ) {
+    return envAppUrl.replace(/\/$/, '');
+  }
+
+  // 3. Vercel deployment variables (server-side)
+  if (typeof process !== 'undefined') {
+    if (process.env?.VERCEL_PROJECT_PRODUCTION_URL) {
+      return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL.replace(/\/$/, '')}`;
+    }
+    if (process.env?.VERCEL_URL) {
+      return `https://${process.env.VERCEL_URL.replace(/\/$/, '')}`;
     }
   }
 

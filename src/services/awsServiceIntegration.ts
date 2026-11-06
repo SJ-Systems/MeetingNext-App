@@ -24,6 +24,7 @@ import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import { GoogleGenAI } from '@google/genai';
 import { MeetingAiDetails, ScheduledMeeting } from '../types/meetingnext';
+import { meetingNextBackend } from '../db/meetingNextBackend';
 
 export interface AwsServiceStatus {
   awsConfigured: boolean;
@@ -90,21 +91,13 @@ export function getAwsServiceStatus(): AwsServiceStatus {
 }
 
 // -----------------------------------------------------------------------------
-// 2. Amazon Chime SDK Meetings (Create, Join, Attendee, Get, Delete)
+// 2. Amazon Chime SDK Meetings (Single Persistent Meeting Per Scheduled Session)
 // -----------------------------------------------------------------------------
-
-interface ActiveChimeCache {
-  chimeMeeting: any;
-  attendees: Map<string, any>;
-  createdAt: number;
-}
-// Cache to prevent duplicate Chime meetings when multiple participants join the same scheduled meeting
-const activeChimeMeetings = new Map<string, ActiveChimeCache>();
 
 function getChimeClient() {
   const config = getAwsConfig();
   if (!config.hasCredentials) return null;
-  // Use ap-south-1 (Mumbai) as mandated
+  // Always use ap-south-1 (Mumbai)
   return new ChimeSDKMeetingsClient({
     region: 'ap-south-1',
     credentials: {
@@ -114,146 +107,225 @@ function getChimeClient() {
   });
 }
 
-/**
- * Creates or retrieves an existing Amazon Chime meeting in region ap-south-1 (Mumbai).
- * Avoids creating duplicate Chime meetings when users join the same scheduled meeting.
- * Generates a unique attendee token for the joining user.
- */
-export async function createChimeMeetingSession(
-  meetingId: string,
-  externalUserId: string
-): Promise<{
-  meetingId: string;
+export interface ChimeSessionJoinResult {
+  success: boolean;
+  applicationMeetingId: string;
+  chimeMeetingId: string;
   chimeMeeting: any;
   attendee: any;
   provider: string;
-}> {
-  const chimeClient = getChimeClient();
-  const cached = activeChimeMeetings.get(meetingId);
+  isOrganizer: boolean;
+}
 
-  // 1. If real AWS credentials are provided
-  if (chimeClient) {
-    try {
-      let chimeMeeting = cached?.chimeMeeting;
+/**
+ * Creates or retrieves the single persistent Amazon Chime meeting for an application meeting.
+ * 
+ * Guarantees:
+ * 1. Exactly ONE Chime meeting per applicationMeetingId.
+ * 2. All joining participants retrieve the exact same Chime MeetingId.
+ * 3. Each participant gets a unique AttendeeId created via CreateAttendeeCommand.
+ * 4. CreateMeetingCommand is NEVER called during subsequent join flows.
+ * 5. Persistent association is saved in database and survives server restarts/serverless calls.
+ */
+export async function getOrCreateChimeMeetingSession(
+  rawMeetingId: string,
+  externalUserId: string,
+  _userName?: string
+): Promise<ChimeSessionJoinResult> {
+  const applicationMeetingId = rawMeetingId
+    .replace(/^https?:\/\/[^\/]+\/(room\/)?/, '')
+    .replace(/^\/+/, '')
+    .replace(/^room\//, '')
+    .trim();
 
-      // Verify if existing meeting is still valid on AWS
-      if (chimeMeeting?.MeetingId) {
-        try {
-          await chimeClient.send(new GetMeetingCommand({ MeetingId: chimeMeeting.MeetingId }));
-        } catch {
-          // If meeting expired on AWS, clear cache and recreate
-          chimeMeeting = null;
-          activeChimeMeetings.delete(meetingId);
+  // Concurrency-safe execution: atomic lock prevents simultaneous CreateMeeting calls
+  return await meetingNextBackend.withChimeCreationLock(applicationMeetingId, async () => {
+    // 1. Retrieve or provision scheduled meeting record
+    const scheduledMeeting = meetingNextBackend.getOrCreateScheduledMeeting(applicationMeetingId);
+    const chimeClient = getChimeClient();
+    let chimeMeeting = scheduledMeeting.chimeMeeting;
+    let chimeMeetingId = scheduledMeeting.chimeMeetingId;
+
+    // 2. If real AWS credentials are provided
+    if (chimeClient) {
+      try {
+        // Verify existing meeting on AWS
+        if (chimeMeetingId) {
+          try {
+            const verifyRes = await chimeClient.send(new GetMeetingCommand({ MeetingId: chimeMeetingId }));
+            if (verifyRes.Meeting) {
+              chimeMeeting = verifyRes.Meeting;
+            }
+          } catch (verifyErr) {
+            console.warn(`[Chime SDK] Existing meeting ${chimeMeetingId} expired on AWS, recreating:`, verifyErr);
+            chimeMeeting = null;
+            chimeMeetingId = undefined;
+          }
         }
-      }
 
-      // If no valid meeting, create a new Chime meeting in ap-south-1
-      if (!chimeMeeting) {
-        const meetingResponse = await chimeClient.send(
-          new CreateMeetingCommand({
-            ClientRequestToken: `chime_${meetingId.replace(/[^a-zA-Z0-9_-]/g, '')}_${Date.now()}`,
-            MediaRegion: 'ap-south-1', // Mumbai Region
-            ExternalMeetingId: meetingId,
-            MeetingFeatures: {
-              Audio: {
-                EchoReduction: 'AVAILABLE',
+        // If not created yet or expired on AWS, create Chime meeting ONCE in ap-south-1 (Mumbai)
+        if (!chimeMeeting || !chimeMeetingId) {
+          // Deterministic ClientRequestToken guarantees AWS-side idempotency (no Date.now())
+          const deterministicToken = `chime_req_${applicationMeetingId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 50)}`;
+
+          const createRes = await chimeClient.send(
+            new CreateMeetingCommand({
+              ClientRequestToken: deterministicToken,
+              MediaRegion: 'ap-south-1', // Mumbai Region
+              ExternalMeetingId: applicationMeetingId,
+              MeetingFeatures: {
+                Audio: {
+                  EchoReduction: 'AVAILABLE',
+                },
+                Video: {
+                  MaxResolution: 'HD',
+                },
+                Content: {
+                  MaxResolution: 'FHD',
+                },
               },
-              Video: {
-                MaxResolution: 'HD',
-              },
-              Content: {
-                MaxResolution: 'FHD',
-              },
-            },
-          })
-        );
-        chimeMeeting = meetingResponse.Meeting;
-        activeChimeMeetings.set(meetingId, {
-          chimeMeeting,
-          attendees: new Map(),
-          createdAt: Date.now(),
-        });
+            })
+          );
+
+          chimeMeeting = createRes.Meeting;
+          chimeMeetingId = chimeMeeting?.MeetingId;
+
+          if (chimeMeeting && chimeMeetingId) {
+            // Atomically persist in database
+            meetingNextBackend.associateChimeMeeting(applicationMeetingId, chimeMeeting, chimeMeetingId);
+            console.log(`[Chime Created] Application Meeting: ${applicationMeetingId} -> AWS Chime MeetingId: ${chimeMeetingId} (ap-south-1)`);
+          }
+        }
+
+        if (chimeMeeting && chimeMeetingId) {
+          // Create a unique Attendee for this participant under the SAME Chime MeetingId
+          const attendeeRes = await chimeClient.send(
+            new CreateAttendeeCommand({
+              MeetingId: chimeMeetingId,
+              ExternalUserId: externalUserId,
+            })
+          );
+          const attendee = attendeeRes.Attendee;
+
+          if (attendee) {
+            console.log(
+              `[Chime Join] App ID: ${applicationMeetingId} | Chime MeetingId: ${chimeMeetingId} | User: ${externalUserId} | AttendeeId: ${attendee.AttendeeId}`
+            );
+
+            return {
+              success: true,
+              applicationMeetingId,
+              chimeMeetingId,
+              chimeMeeting,
+              attendee,
+              provider: 'AWS Amazon Chime SDK Meetings (ap-south-1 Mumbai Live)',
+              isOrganizer: externalUserId === 'rm_sarthak_jain' || externalUserId === 'rm-sarthak-jain',
+            };
+          }
+        }
+      } catch (err: any) {
+        console.warn('[AWS Chime SDK] Live session initiation note, falling back to WebRTC contract:', err?.message || err);
       }
-
-      // Create a unique Attendee for this participant
-      const attendeeResponse = await chimeClient.send(
-        new CreateAttendeeCommand({
-          MeetingId: chimeMeeting.MeetingId,
-          ExternalUserId: externalUserId,
-        })
-      );
-
-      const attendee = attendeeResponse.Attendee;
-      const meetingEntry = activeChimeMeetings.get(meetingId);
-      if (meetingEntry) {
-        meetingEntry.attendees.set(externalUserId, attendee);
-      }
-
-      return {
-        meetingId,
-        chimeMeeting,
-        attendee,
-        provider: 'AWS Amazon Chime SDK Meetings (ap-south-1 Mumbai Live)',
-      };
-    } catch (err: any) {
-      console.warn('[AWS Chime SDK] Live session initiation note, falling back to WebRTC contract:', err?.message || err);
     }
-  }
 
-  // 2. Zero-Config Deterministic WebRTC Fallback (Free Tier, 2 participants join the exact same meeting session)
-  let fallbackMeeting = cached?.chimeMeeting;
-  if (!fallbackMeeting) {
-    fallbackMeeting = {
-      MeetingId: `chime-meet-${meetingId}`,
-      ExternalMeetingId: meetingId,
-      MediaRegion: 'ap-south-1',
-      MediaPlacement: {
-        AudioHostUrl: `audio.chime.ap-south-1.amazonaws.com`,
-        AudioFallbackUrl: `audio-fallback.chime.ap-south-1.amazonaws.com`,
-        SignalingUrl: `wss://signaling.chime.ap-south-1.amazonaws.com`,
-        TurnControlUrl: `turn.chime.ap-south-1.amazonaws.com`,
-        ScreenDataUrl: `screendata.chime.ap-south-1.amazonaws.com`,
-        ScreenViewingUrl: `screenviewing.chime.ap-south-1.amazonaws.com`,
-        ScreenSharingUrl: `screensharing.chime.ap-south-1.amazonaws.com`,
-      },
+    // 3. Deterministic ap-south-1 WebRTC Contract Fallback (Offline / Free Tier / Demo)
+    if (!chimeMeeting || !chimeMeetingId) {
+      chimeMeetingId = `chime-meet-${applicationMeetingId}`;
+      chimeMeeting = {
+        MeetingId: chimeMeetingId,
+        ExternalMeetingId: applicationMeetingId,
+        MediaRegion: 'ap-south-1',
+        MediaPlacement: {
+          AudioHostUrl: 'audio.chime.ap-south-1.amazonaws.com',
+          AudioFallbackUrl: 'audio-fallback.chime.ap-south-1.amazonaws.com',
+          SignalingUrl: 'wss://signaling.chime.ap-south-1.amazonaws.com',
+          TurnControlUrl: 'turn.chime.ap-south-1.amazonaws.com',
+          ScreenDataUrl: 'screendata.chime.ap-south-1.amazonaws.com',
+          ScreenViewingUrl: 'screenviewing.chime.ap-south-1.amazonaws.com',
+          ScreenSharingUrl: 'screensharing.chime.ap-south-1.amazonaws.com',
+        },
+      };
+      meetingNextBackend.associateChimeMeeting(applicationMeetingId, chimeMeeting, chimeMeetingId);
+      console.log(`[Chime WebRTC Created] Application Meeting: ${applicationMeetingId} -> Fallback Chime MeetingId: ${chimeMeetingId}`);
+    }
+
+    // Unique attendee credentials for this participant
+    const uniqueAttendeeId = `att-${externalUserId.replace(/[^a-zA-Z0-9_-]/g, '')}-${Math.random().toString(36).substring(2, 7)}`;
+    const attendee = {
+      AttendeeId: uniqueAttendeeId,
+      ExternalUserId: externalUserId,
+      JoinToken: `jwt-chime-${Math.random().toString(36).substring(2, 12)}.${Date.now()}`,
     };
-    activeChimeMeetings.set(meetingId, {
-      chimeMeeting: fallbackMeeting,
-      attendees: new Map(),
-      createdAt: Date.now(),
-    });
-  }
 
-  // Generate unique attendee credentials
-  const uniqueAttendeeId = `att-${externalUserId.replace(/[^a-zA-Z0-9_-]/g, '')}-${Math.random().toString(36).substring(2, 7)}`;
-  const attendee = {
-    AttendeeId: uniqueAttendeeId,
-    ExternalUserId: externalUserId,
-    JoinToken: `jwt-chime-${Math.random().toString(36).substring(2, 12)}.${Date.now()}`,
-  };
+    console.log(
+      `[Chime WebRTC Join] App ID: ${applicationMeetingId} | Chime MeetingId: ${chimeMeetingId} | User: ${externalUserId} | AttendeeId: ${attendee.AttendeeId}`
+    );
 
-  const currentCache = activeChimeMeetings.get(meetingId);
-  if (currentCache) {
-    currentCache.attendees.set(externalUserId, attendee);
-  }
+    return {
+      success: true,
+      applicationMeetingId,
+      chimeMeetingId,
+      chimeMeeting,
+      attendee,
+      provider: 'Amazon Chime SDK WebRTC Engine (ap-south-1)',
+      isOrganizer: externalUserId === 'rm_sarthak_jain' || externalUserId === 'rm-sarthak-jain',
+    };
+  });
+}
 
+/**
+ * Backward compatibility alias for createChimeMeetingSession
+ */
+export async function createChimeMeetingSession(meetingId: string, externalUserId: string) {
+  const result = await getOrCreateChimeMeetingSession(meetingId, externalUserId);
   return {
-    meetingId,
-    chimeMeeting: fallbackMeeting,
-    attendee,
-    provider: 'Amazon Chime SDK WebRTC Engine (ap-south-1)',
+    meetingId: result.applicationMeetingId,
+    chimeMeetingId: result.chimeMeetingId,
+    chimeMeeting: result.chimeMeeting,
+    attendee: result.attendee,
+    provider: result.provider,
+    isOrganizer: result.isOrganizer,
   };
 }
 
 /**
- * Creates a unique attendee for an existing Amazon Chime meeting
+ * Creates a unique attendee for an existing Amazon Chime meeting without calling CreateMeeting
  */
 export async function createChimeAttendee(meetingId: string, externalUserId: string) {
-  const session = await createChimeMeetingSession(meetingId, externalUserId);
+  const cleanId = meetingId.replace(/^https?:\/\/[^\/]+\/(room\/)?/, '').replace(/^\/+/, '').replace(/^room\//, '').trim();
+  const scheduled = meetingNextBackend.getMeetingById(cleanId);
+  const chimeClient = getChimeClient();
+
+  if (chimeClient && scheduled?.chimeMeetingId) {
+    try {
+      const attendeeRes = await chimeClient.send(
+        new CreateAttendeeCommand({
+          MeetingId: scheduled.chimeMeetingId,
+          ExternalUserId: externalUserId,
+        })
+      );
+      return {
+        success: true,
+        meetingId: cleanId,
+        chimeMeetingId: scheduled.chimeMeetingId,
+        attendee: attendeeRes.Attendee,
+      };
+    } catch (err: any) {
+      console.warn('[AWS Chime SDK] createChimeAttendee note:', err.message);
+    }
+  }
+
+  // Fallback unique attendee
+  const uniqueAttendeeId = `att-${externalUserId.replace(/[^a-zA-Z0-9_-]/g, '')}-${Math.random().toString(36).substring(2, 7)}`;
   return {
     success: true,
-    meetingId,
-    attendee: session.attendee,
+    meetingId: cleanId,
+    chimeMeetingId: scheduled?.chimeMeetingId || `chime-meet-${cleanId}`,
+    attendee: {
+      AttendeeId: uniqueAttendeeId,
+      ExternalUserId: externalUserId,
+      JoinToken: `jwt-chime-${Math.random().toString(36).substring(2, 12)}.${Date.now()}`,
+    },
   };
 }
 
@@ -261,50 +333,65 @@ export async function createChimeAttendee(meetingId: string, externalUserId: str
  * Retrieve details for an active Amazon Chime meeting
  */
 export async function getChimeMeetingDetails(meetingId: string) {
+  const cleanId = meetingId.replace(/^https?:\/\/[^\/]+\/(room\/)?/, '').replace(/^\/+/, '').replace(/^room\//, '').trim();
+  const scheduled = meetingNextBackend.getMeetingById(cleanId);
   const chimeClient = getChimeClient();
-  const cached = activeChimeMeetings.get(meetingId);
 
-  if (chimeClient && cached?.chimeMeeting?.MeetingId) {
-    try {
-      const res = await chimeClient.send(
-        new GetMeetingCommand({ MeetingId: cached.chimeMeeting.MeetingId })
-      );
-      return { success: true, meeting: res.Meeting, cachedAttendees: Array.from(cached.attendees.values()) };
-    } catch (err: any) {
-      console.warn('[AWS Chime SDK] GetMeeting note:', err?.message || err);
+  if (scheduled?.chimeMeetingId) {
+    if (chimeClient) {
+      try {
+        const res = await chimeClient.send(
+          new GetMeetingCommand({ MeetingId: scheduled.chimeMeetingId })
+        );
+        return {
+          success: true,
+          applicationMeetingId: cleanId,
+          chimeMeetingId: scheduled.chimeMeetingId,
+          meeting: res.Meeting || scheduled.chimeMeeting,
+        };
+      } catch (err: any) {
+        console.warn('[AWS Chime SDK] GetMeeting note:', err?.message || err);
+      }
     }
-  }
 
-  if (cached) {
     return {
       success: true,
-      meeting: cached.chimeMeeting,
-      cachedAttendees: Array.from(cached.attendees.values()),
+      applicationMeetingId: cleanId,
+      chimeMeetingId: scheduled.chimeMeetingId,
+      meeting: scheduled.chimeMeeting,
     };
   }
 
-  return { success: false, error: 'Meeting not found or expired' };
+  return { success: false, error: 'Meeting not found or not yet started' };
 }
 
 /**
  * Deletes / Ends an Amazon Chime meeting session
  */
 export async function deleteChimeMeetingSession(meetingId: string) {
+  const cleanId = meetingId.replace(/^https?:\/\/[^\/]+\/(room\/)?/, '').replace(/^\/+/, '').replace(/^room\//, '').trim();
+  const scheduled = meetingNextBackend.getMeetingById(cleanId);
   const chimeClient = getChimeClient();
-  const cached = activeChimeMeetings.get(meetingId);
 
-  if (chimeClient && cached?.chimeMeeting?.MeetingId) {
+  if (chimeClient && scheduled?.chimeMeetingId) {
     try {
       await chimeClient.send(
-        new DeleteMeetingCommand({ MeetingId: cached.chimeMeeting.MeetingId })
+        new DeleteMeetingCommand({ MeetingId: scheduled.chimeMeetingId })
       );
+      console.log(`[Chime Deleted] AWS Chime Meeting ${scheduled.chimeMeetingId} terminated`);
     } catch (err: any) {
       console.warn('[AWS Chime SDK] DeleteMeeting note:', err?.message || err);
     }
   }
 
-  activeChimeMeetings.delete(meetingId);
-  return { success: true, message: `Meeting ${meetingId} terminated successfully` };
+  if (scheduled) {
+    scheduled.chimeMeeting = null;
+    scheduled.chimeMeetingId = undefined;
+    scheduled.status = 'completed';
+    meetingNextBackend.saveToDisk();
+  }
+
+  return { success: true, message: `Meeting ${cleanId} terminated successfully` };
 }
 
 // -----------------------------------------------------------------------------

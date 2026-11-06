@@ -38,6 +38,7 @@ import { createMicrophoneMeter } from '../../utils/audioTones';
 import { LiveSpeechEngine, redactFinancialPII } from '../../utils/speechRecognition';
 import { generateMeetingLink } from '../../utils/appUrl';
 import { meetingNextApi } from '../../services/meetingNextApi';
+import { chimeClientService } from '../../services/chimeClientService';
 
 interface RemoteParticipant {
   id: string;
@@ -170,11 +171,22 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
     },
   ]);
 
+  // Amazon Chime SDK Real Session State
+  const [chimeSessionData, setChimeSessionData] = useState<{
+    applicationMeetingId: string;
+    chimeMeetingId: string;
+    attendeeId: string;
+    provider: string;
+  } | null>(null);
+  const [chimeConnectionStatus, setChimeConnectionStatus] = useState<string>('connecting');
+  const [showDebugBanner, setShowDebugBanner] = useState<boolean>(true);
+
   // DOM Refs
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const screenVideoRef = useRef<HTMLVideoElement | null>(null);
   const meterCleanupRef = useRef<(() => void) | null>(null);
   const speechEngineRef = useRef<LiveSpeechEngine | null>(null);
+  const chimeAudioRef = useRef<HTMLAudioElement | null>(null);
 
   // ---------------------------------------------------------------------------
   // 1. Initialize WebRTC Media Stream (Camera & Microphone)
@@ -257,6 +269,42 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
       }
     });
 
+    // Initialize Amazon Chime SDK Single Persistent Meeting Session
+    meetingNextApi.joinChimeMeeting(meeting.id, localParticipantId).then(async (joinRes) => {
+      if (!active || !joinRes) return;
+      setChimeSessionData({
+        applicationMeetingId: joinRes.applicationMeetingId || meeting.id,
+        chimeMeetingId: joinRes.chimeMeetingId || joinRes.chimeMeeting?.MeetingId,
+        attendeeId: joinRes.attendee?.AttendeeId,
+        provider: joinRes.provider || 'Amazon Chime SDK Meetings (ap-south-1)',
+      });
+
+      if (chimeAudioRef.current && joinRes.chimeMeeting && joinRes.attendee) {
+        try {
+          await chimeClientService.initializeSession(
+            joinRes,
+            chimeAudioRef.current,
+            isMicMuted,
+            !isVideoOff
+          );
+          chimeClientService.setCallbacks({
+            onConnectionStateChange: (state) => {
+              if (active) setChimeConnectionStatus(state);
+            },
+            onError: (err) => {
+              console.warn('[Chime SDK Alert]', err);
+            },
+          });
+          await chimeClientService.start();
+          if (active) setChimeConnectionStatus('connected');
+        } catch (chimeErr) {
+          console.warn('[Chime SDK] Initialization note:', chimeErr);
+        }
+      }
+    }).catch((err) => {
+      console.warn('[Chime SDK] Join API note:', err);
+    });
+
     // Initialize Speech Recognition Engine for Live Captions
     try {
       speechEngineRef.current = new LiveSpeechEngine();
@@ -283,6 +331,7 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
 
     return () => {
       active = false;
+      chimeClientService.leave();
       if (localStream) {
         localStream.getTracks().forEach((track) => track.stop());
       }
@@ -381,7 +430,7 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
   // ---------------------------------------------------------------------------
   // Media Controls: Mic, Video, Screen Sharing, Recording
   // ---------------------------------------------------------------------------
-  const toggleMic = () => {
+  const toggleMic = async () => {
     if (localStream) {
       localStream.getAudioTracks().forEach((track) => {
         track.enabled = !track.enabled;
@@ -389,6 +438,8 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
     }
     const nextMuted = !isMicMuted;
     setIsMicMuted(nextMuted);
+    await chimeClientService.setMicrophoneMuted(nextMuted);
+
     // sync status to backend
     meetingNextApi.joinRoomParticipant(meeting.id, {
       id: localParticipantId,
@@ -401,7 +452,7 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
     });
   };
 
-  const toggleVideo = () => {
+  const toggleVideo = async () => {
     if (localStream) {
       localStream.getVideoTracks().forEach((track) => {
         track.enabled = !track.enabled;
@@ -409,6 +460,8 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
     }
     const nextVideoOff = !isVideoOff;
     setIsVideoOff(nextVideoOff);
+    await chimeClientService.setVideoEnabled(!nextVideoOff);
+
     meetingNextApi.joinRoomParticipant(meeting.id, {
       id: localParticipantId,
       name: localDisplayName,
@@ -428,6 +481,7 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
       }
       setIsScreenSharing(false);
       setLayoutMode('grid');
+      await chimeClientService.stopScreenShare();
     } else {
       try {
         const stream = await navigator.mediaDevices.getDisplayMedia({
@@ -438,11 +492,13 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
         setScreenStream(stream);
         setIsScreenSharing(true);
         setLayoutMode('presentation');
+        await chimeClientService.startScreenShare();
 
         stream.getVideoTracks()[0].onended = () => {
           setIsScreenSharing(false);
           setScreenStream(null);
           setLayoutMode('grid');
+          chimeClientService.stopScreenShare();
         };
       } catch (err) {
         console.warn('Screen share canceled or unpermitted', err);
@@ -552,6 +608,7 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
 
   // End Meeting for All (Organizer)
   const handleEndMeetingForAll = () => {
+    chimeClientService.leave();
     if (localStream) {
       localStream.getTracks().forEach((track) => track.stop());
     }
@@ -569,6 +626,7 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
   };
 
   const handleLeaveOnly = () => {
+    chimeClientService.leave();
     if (localStream) {
       localStream.getTracks().forEach((track) => track.stop());
     }
@@ -589,6 +647,9 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950 text-slate-100 flex flex-col font-sans select-none overflow-hidden animate-in fade-in duration-200">
+      {/* Hidden audio element for Amazon Chime SDK remote audio playback */}
+      <audio ref={chimeAudioRef} autoPlay playsInline style={{ display: 'none' }} />
+
       {/* --------------------------------------------------------------------- */}
       {/* 1. Top Meeting Bar */}
       {/* --------------------------------------------------------------------- */}
@@ -699,6 +760,73 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
           </button>
         </div>
       </header>
+
+      {/* Dev-Only Verification View: Displays persistent Application ID, Chime MeetingId, & AttendeeId */}
+      {showDebugBanner ? (
+        <div className="bg-slate-900/95 border-b border-indigo-950 px-4 py-2 text-[11px] font-mono text-slate-300 flex flex-wrap items-center justify-between gap-3 shrink-0">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <span className="flex items-center gap-1.5 text-indigo-400 font-semibold">
+              <Radio className="w-3.5 h-3.5 animate-pulse text-indigo-400" />
+              CHIME SDK DIAGNOSTICS:
+            </span>
+            <span className="flex items-center gap-1 bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700">
+              <span className="text-slate-400">App ID:</span>
+              <span className="text-amber-300 font-bold">{chimeSessionData?.applicationMeetingId || meeting.id}</span>
+            </span>
+            <span className="flex items-center gap-1 bg-slate-800/80 px-2 py-0.5 rounded border border-indigo-800/60">
+              <span className="text-indigo-300">Chime MeetingId:</span>
+              <span className="text-emerald-400 font-bold">{chimeSessionData?.chimeMeetingId || `chime-meet-${meeting.id}`}</span>
+            </span>
+            <span className="flex items-center gap-1 bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700">
+              <span className="text-slate-400">AttendeeId:</span>
+              <span className="text-cyan-300">{chimeSessionData?.attendeeId || `att-${localParticipantId}`}</span>
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="text-slate-400">Status:</span>
+              <span
+                className={`px-1.5 py-0.5 rounded uppercase text-[10px] font-bold ${
+                  chimeConnectionStatus === 'connected'
+                    ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                    : chimeConnectionStatus === 'connecting'
+                    ? 'bg-amber-950 text-amber-300 border border-amber-800'
+                    : 'bg-slate-800 text-slate-300'
+                }`}
+              >
+                {chimeConnectionStatus}
+              </span>
+            </span>
+            <span className="hidden xl:inline text-slate-400">
+              Region: <span className="text-slate-200">ap-south-1 (Mumbai)</span>
+            </span>
+            <span className="hidden 2xl:inline text-slate-400">
+              Media: <span className="text-slate-200">{isMicMuted ? 'Muted' : 'Unmuted'} / {isVideoOff ? 'Cam Off' : 'Cam On'}</span>
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-slate-400 hidden md:inline">
+              (Multi-tab verification: verify both windows share the same Chime MeetingId)
+            </span>
+            <button
+              onClick={() => setShowDebugBanner(false)}
+              className="text-slate-400 hover:text-slate-200 text-[10px] px-2 py-0.5 bg-slate-800 hover:bg-slate-700 rounded border border-slate-700"
+            >
+              Hide
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-slate-900/60 border-b border-slate-800 px-4 py-1 flex items-center justify-between text-[11px] font-mono text-slate-400">
+          <span className="truncate">
+            Chime MeetingId: <strong className="text-emerald-400">{chimeSessionData?.chimeMeetingId || `chime-meet-${meeting.id}`}</strong>
+          </span>
+          <button
+            onClick={() => setShowDebugBanner(true)}
+            className="text-indigo-400 hover:text-indigo-300 underline text-[10px]"
+          >
+            Show Diagnostics
+          </button>
+        </div>
+      )}
 
       {/* Permission Notice Banner if camera/mic blocked */}
       {mediaNotice && (

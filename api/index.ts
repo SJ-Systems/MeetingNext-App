@@ -2,6 +2,7 @@ import express, { Request, Response } from 'express';
 import { meetingNextBackend } from '../src/db/meetingNextBackend';
 import {
   getAwsServiceStatus,
+  getOrCreateChimeMeetingSession,
   createChimeMeetingSession,
   getChimeMeetingDetails,
   deleteChimeMeetingSession,
@@ -134,24 +135,21 @@ app.put('/api/meetingnext/meetings/:id', async (req: Request, res: Response) => 
 });
 
 app.post('/api/meetingnext/meetings/:id/join', async (req: Request, res: Response) => {
-  const meeting = meetingNextBackend.getMeetingById(req.params.id);
-  if (!meeting) {
-    return res.status(404).json({ error: 'Meeting not found' });
+  try {
+    const rawId = req.params.id;
+    const meeting = meetingNextBackend.getOrCreateScheduledMeeting(rawId);
+    const userId = req.body.userId || req.body.externalUserId || 'rm_sarthak_jain';
+    const userName = req.body.userName;
+
+    const session = await getOrCreateChimeMeetingSession(meeting.id, userId, userName);
+    res.json(session);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to join meeting' });
   }
-
-  const session = await createChimeMeetingSession(
-    meeting.id,
-    req.body.userId || 'rm-sarthak-jain'
-  );
-
-  res.json({
-    success: true,
-    ...session,
-  });
 });
 
 // ---------------------------------------------------------------------------
-// Amazon Chime SDK Meetings Dedicated APIs (ap-south-1 Mumbai)
+// Amazon Chime SDK Meetings Dedicated APIs (Single Persistent Meeting)
 // ---------------------------------------------------------------------------
 
 // Create or retrieve a Chime meeting
@@ -159,45 +157,26 @@ app.post('/api/chime/meetings', async (req: Request, res: Response) => {
   try {
     const user = meetingNextBackend.getCurrentUser();
     const externalUserId = req.body.externalUserId || user?.id || 'rm_sarthak_jain';
-    const meetingId = req.body.meetingId || `chime_instant_${Date.now()}`;
+    const meetingId = req.body.meetingId || `mtg_instant_${Date.now()}`;
+    const userName = req.body.userName || user?.name;
 
-    const session = await createChimeMeetingSession(meetingId, externalUserId);
-    res.status(201).json({
-      success: true,
-      meetingId,
-      chimeMeeting: session.chimeMeeting,
-      attendee: session.attendee,
-      provider: session.provider,
-      isOrganizer: true,
-    });
+    const session = await getOrCreateChimeMeetingSession(meetingId, externalUserId, userName);
+    res.status(201).json(session);
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to create Chime meeting session' });
   }
 });
 
-// Join an existing Chime meeting & generate unique attendee credentials
+// Join an existing Chime meeting & generate unique attendee credentials under the same MeetingId
 app.post('/api/chime/meetings/:meetingId/join', async (req: Request, res: Response) => {
   try {
     const user = meetingNextBackend.getCurrentUser();
     const meetingId = req.params.meetingId;
-    const externalUserId = req.body.externalUserId || user?.id || `user_${Date.now()}`;
+    const externalUserId = req.body.externalUserId || req.body.userId || user?.id || `user_${Date.now()}`;
+    const userName = req.body.userName || (user?.id === externalUserId ? user?.name : undefined);
 
-    const session = await createChimeMeetingSession(meetingId, externalUserId);
-    
-    // Update status in backend store if scheduled
-    const scheduled = meetingNextBackend.getMeetingById(meetingId);
-    if (scheduled && scheduled.status === 'upcoming') {
-      scheduled.status = 'in_progress';
-    }
-
-    res.json({
-      success: true,
-      meetingId,
-      chimeMeeting: session.chimeMeeting,
-      attendee: session.attendee,
-      provider: session.provider,
-      isOrganizer: user?.id === 'rm_sarthak_jain',
-    });
+    const session = await getOrCreateChimeMeetingSession(meetingId, externalUserId, userName);
+    res.json(session);
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to join Chime meeting' });
   }

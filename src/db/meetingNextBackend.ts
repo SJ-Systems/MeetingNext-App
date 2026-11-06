@@ -18,6 +18,9 @@ import {
 } from './meetingNextStore';
 import { generateMeetingLink } from '../utils/appUrl';
 
+import * as fs from 'fs';
+import * as path from 'path';
+
 export interface DispatchReceipt {
   channel: 'sms' | 'gmail';
   recipient: string;
@@ -63,6 +66,10 @@ export interface RoomChatMessage {
   isHost?: boolean;
 }
 
+// Persistent database file paths
+const PERSISTENCE_FILE_TMP = '/tmp/meetingnext_persistent_db.json';
+const PERSISTENCE_FILE_LOCAL = path.join(process.cwd(), 'data', 'meetings_store.json');
+
 class MeetingNextBackendStore {
   private upcomingMeetings: ScheduledMeeting[] = [...INITIAL_UPCOMING_MEETINGS];
   private pastMeetings: ScheduledMeeting[] = [...INITIAL_PAST_MEETINGS];
@@ -73,6 +80,79 @@ class MeetingNextBackendStore {
   private currentUser: AuthUser | null = SARTHAK_JAIN_USER;
   private roomParticipants: Map<string, ActiveRoomParticipant[]> = new Map();
   private roomMessages: Map<string, RoomChatMessage[]> = new Map();
+
+  // In-process lock to prevent duplicate Chime meeting creation under race conditions
+  private chimeCreationLocks: Map<string, Promise<any>> = new Map();
+
+  constructor() {
+    this.loadFromDisk();
+  }
+
+  /**
+   * Load persisted state from disk if available
+   */
+  private loadFromDisk() {
+    try {
+      let content: string | null = null;
+      if (fs.existsSync(PERSISTENCE_FILE_TMP)) {
+        content = fs.readFileSync(PERSISTENCE_FILE_TMP, 'utf-8');
+      } else if (fs.existsSync(PERSISTENCE_FILE_LOCAL)) {
+        content = fs.readFileSync(PERSISTENCE_FILE_LOCAL, 'utf-8');
+      }
+
+      if (content) {
+        const parsed = JSON.parse(content);
+        if (Array.isArray(parsed.upcomingMeetings) && parsed.upcomingMeetings.length > 0) {
+          // Merge with initial list so standard meetings are preserved
+          const loadedMap = new Map<string, ScheduledMeeting>(parsed.upcomingMeetings.map((m: ScheduledMeeting) => [m.id, m]));
+          for (const initM of INITIAL_UPCOMING_MEETINGS) {
+            if (!loadedMap.has(initM.id)) {
+              loadedMap.set(initM.id, initM);
+            }
+          }
+          this.upcomingMeetings = Array.from(loadedMap.values());
+        }
+        if (Array.isArray(parsed.pastMeetings)) {
+          this.pastMeetings = parsed.pastMeetings;
+        }
+        if (parsed.aiData) {
+          this.aiData = { ...MOCK_AI_DATA, ...parsed.aiData };
+        }
+      }
+    } catch (e) {
+      console.warn('[MeetingNext DB] Persistence read note:', e);
+    }
+  }
+
+  /**
+   * Persist current state to disk
+   */
+  public saveToDisk() {
+    try {
+      const payload = JSON.stringify({
+        upcomingMeetings: this.upcomingMeetings,
+        pastMeetings: this.pastMeetings,
+        aiData: this.aiData,
+        updatedAt: new Date().toISOString(),
+      }, null, 2);
+
+      // Write to /tmp
+      fs.writeFileSync(PERSISTENCE_FILE_TMP, payload, 'utf-8');
+
+      // Write to ./data if directory exists or can be created
+      try {
+        const dir = path.dirname(PERSISTENCE_FILE_LOCAL);
+        if (!fs.existsSync(dir)) {
+          fs.mkdirSync(dir, { recursive: true });
+        }
+        fs.writeFileSync(PERSISTENCE_FILE_LOCAL, payload, 'utf-8');
+      } catch (localErr) {
+        // silent fallback to /tmp
+      }
+    } catch (e) {
+      console.warn('[MeetingNext DB] Persistence write note:', e);
+    }
+  }
 
   // Amazon Connect Configuration
   private connectConfig: AmazonConnectInstanceConfig = {
@@ -196,9 +276,99 @@ class MeetingNextBackendStore {
     if (!id) return undefined;
     const cleanId = id.replace(/^https?:\/\/[^\/]+\/(room\/)?/, '').replace(/^\/+/, '').replace(/^room\//, '');
     return (
-      this.upcomingMeetings.find((m) => m.id === cleanId || m.id === id || m.meetingLink.includes(cleanId) || m.meetingLink.includes(id)) ||
-      this.pastMeetings.find((m) => m.id === cleanId || m.id === id || m.meetingLink.includes(cleanId) || m.meetingLink.includes(id))
+      this.upcomingMeetings.find(
+        (m) =>
+          m.id === cleanId ||
+          m.id === id ||
+          m.chimeMeetingId === cleanId ||
+          m.chimeMeetingId === id ||
+          m.meetingLink.includes(cleanId) ||
+          m.meetingLink.includes(id)
+      ) ||
+      this.pastMeetings.find(
+        (m) =>
+          m.id === cleanId ||
+          m.id === id ||
+          m.chimeMeetingId === cleanId ||
+          m.chimeMeetingId === id ||
+          m.meetingLink.includes(cleanId) ||
+          m.meetingLink.includes(id)
+      )
     );
+  }
+
+  /**
+   * Concurrency-safe execution: prevents multiple simultaneous requests from
+   * initiating duplicate Amazon Chime meetings for the same meeting ID.
+   */
+  async withChimeCreationLock<T>(meetingId: string, action: () => Promise<T>): Promise<T> {
+    const cleanId = meetingId.replace(/^https?:\/\/[^\/]+\/(room\/)?/, '').replace(/^\/+/, '').replace(/^room\//, '');
+    const activeLock = this.chimeCreationLocks.get(cleanId);
+    if (activeLock) {
+      await activeLock;
+    }
+
+    const lockPromise = action();
+    this.chimeCreationLocks.set(cleanId, lockPromise);
+
+    try {
+      const result = await lockPromise;
+      return result;
+    } finally {
+      this.chimeCreationLocks.delete(cleanId);
+    }
+  }
+
+  /**
+   * Retrieves an existing meeting or provisions a persistent record
+   * so direct join URLs (/room/:id) share the identical Chime meeting.
+   */
+  getOrCreateScheduledMeeting(
+    id: string,
+    defaultInfo?: Partial<ScheduledMeeting>
+  ): ScheduledMeeting {
+    const existing = this.getMeetingById(id);
+    if (existing) {
+      return existing;
+    }
+
+    const cleanId = id.replace(/^https?:\/\/[^\/]+\/(room\/)?/, '').replace(/^\/+/, '').replace(/^room\//, '');
+    const link = generateMeetingLink(cleanId);
+
+    const newMeeting: ScheduledMeeting = {
+      id: cleanId,
+      customerName: defaultInfo?.customerName || 'Customer Attendee',
+      customerNumber: defaultInfo?.customerNumber || '+1 (415) 890-4412',
+      customerEmail: defaultInfo?.customerEmail || 'customer@client.com',
+      reason: defaultInfo?.reason || 'Banking Video Consultation',
+      date: defaultInfo?.date || 'Today',
+      time: defaultInfo?.time || 'Immediate Consultation',
+      durationMinutes: defaultInfo?.durationMinutes || 30,
+      meetingLink: link,
+      status: 'upcoming',
+      sentViaMessage: true,
+      sentViaGmail: true,
+      ...defaultInfo,
+    };
+
+    this.upcomingMeetings.unshift(newMeeting);
+    this.saveToDisk();
+    return newMeeting;
+  }
+
+  /**
+   * Associates an active Amazon Chime Meeting with the scheduled application meeting.
+   * Persists to disk immediately so serverless lambdas and restarts retain the ID.
+   */
+  associateChimeMeeting(meetingId: string, chimeMeeting: any, chimeMeetingId: string): ScheduledMeeting | null {
+    const meeting = this.getOrCreateScheduledMeeting(meetingId);
+    meeting.chimeMeetingId = chimeMeetingId;
+    meeting.chimeExternalMeetingId = meeting.id;
+    meeting.chimeMeeting = chimeMeeting;
+    meeting.status = 'in_progress';
+
+    this.saveToDisk();
+    return meeting;
   }
 
   scheduleMeeting(data: {
@@ -231,6 +401,7 @@ class MeetingNextBackendStore {
     };
 
     this.upcomingMeetings.unshift(newMeeting);
+    this.saveToDisk();
 
     // Generate real delivery receipts
     const smsReceipt: DispatchReceipt = {
@@ -300,6 +471,7 @@ class MeetingNextBackendStore {
         details: `MeetingNext Update: Your meeting has been rescheduled to ${updated.date} at ${updated.time}. Link: ${updated.meetingLink}`,
       };
       this.dispatchLogs.push(updateReceipt);
+      this.saveToDisk();
 
       return { meeting: updated, receipts: { sms: updateReceipt } };
     }
@@ -360,6 +532,7 @@ class MeetingNextBackendStore {
           },
         };
       }
+      this.saveToDisk();
       return completedMtg;
     }
     return null;

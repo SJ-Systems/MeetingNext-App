@@ -75,6 +75,8 @@ export interface ChimeAttendeeInfo {
 export interface ChimeJoinSessionResponse {
   success: boolean;
   meetingId: string;
+  applicationMeetingId?: string;
+  chimeMeetingId?: string;
   chimeMeeting: ChimeMeetingInfo;
   attendee: ChimeAttendeeInfo;
   provider: string;

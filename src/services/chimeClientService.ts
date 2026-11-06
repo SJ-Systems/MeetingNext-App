@@ -471,6 +471,10 @@ class ChimeClientService {
   // Meeting Teardown (Leave & End Meeting)
   // ---------------------------------------------------------------------------
 
+  public async leave(): Promise<void> {
+    return this.leaveMeeting();
+  }
+
   public async leaveMeeting(): Promise<void> {
     this.stopPreMeetingPreview();
     if (this.meetingSession) {
