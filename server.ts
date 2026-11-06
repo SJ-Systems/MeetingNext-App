@@ -6,6 +6,17 @@ import dotenv from 'dotenv';
 import { db } from './src/db/inMemoryDb';
 import { meetingNextBackend } from './src/db/meetingNextBackend';
 import { redactFinancialPII } from './src/utils/speechRecognition';
+import {
+  getAwsServiceStatus,
+  createChimeMeetingSession,
+  getChimeMeetingDetails,
+  deleteChimeMeetingSession,
+  createChimeAttendee,
+  initiateOutboundCall,
+  sendSmsNotification,
+  sendEmailNotification,
+  generateAiMeetingInsights,
+} from './src/services/awsServiceIntegration';
 
 dotenv.config();
 
@@ -42,6 +53,7 @@ async function startServer() {
       timestamp: new Date().toISOString(),
       awsChimeConnected: true,
       amazonConnectProvisioned: true,
+      awsStatus: getAwsServiceStatus(),
     });
   });
 
@@ -569,8 +581,8 @@ async function startServer() {
     }
   });
 
-  // 2. Schedule a meeting & auto-dispatch SMS and Gmail
-  app.post('/api/meetingnext/meetings', (req: Request, res: Response) => {
+  // 2. Schedule a meeting & auto-dispatch SMS and Gmail via AWS SNS and SES
+  app.post('/api/meetingnext/meetings', async (req: Request, res: Response) => {
     const { customerName, customerNumber, customerEmail, reason, date, time, durationMinutes } = req.body;
     if (!customerName || !customerNumber) {
       return res.status(400).json({ error: 'Customer name and phone number are required.' });
@@ -586,61 +598,198 @@ async function startServer() {
         time: time || '11:00 AM',
         durationMinutes: durationMinutes || 30,
       });
-      res.status(201).json({ success: true, ...result });
+
+      // Execute AWS SNS (SMS) and AWS SES (Email) dispatches
+      const [smsRes, emailRes] = await Promise.all([
+        sendSmsNotification({
+          to: customerNumber,
+          customerName,
+          meetingLink: result.meeting.meetingLink,
+          meetingDate: result.meeting.date,
+          meetingTime: result.meeting.time,
+          reason: result.meeting.reason,
+        }),
+        sendEmailNotification({
+          to: result.meeting.customerEmail,
+          customerName,
+          meetingLink: result.meeting.meetingLink,
+          meetingDate: result.meeting.date,
+          meetingTime: result.meeting.time,
+          reason: result.meeting.reason,
+        }),
+      ]);
+
+      res.status(201).json({
+        success: true,
+        meeting: result.meeting,
+        receipts: {
+          sms: smsRes,
+          gmail: emailRes,
+        },
+      });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
   // 3. Update / Reschedule meeting details
-  app.put('/api/meetingnext/meetings/:id', (req: Request, res: Response) => {
+  app.put('/api/meetingnext/meetings/:id', async (req: Request, res: Response) => {
     try {
       const result = meetingNextBackend.updateMeeting(req.params.id, req.body);
       if (!result) {
         return res.status(404).json({ error: 'Meeting not found' });
       }
-      res.json({ success: true, ...result });
+
+      // Re-dispatch updated calendar notifications
+      const [smsRes, emailRes] = await Promise.all([
+        sendSmsNotification({
+          to: result.meeting.customerNumber,
+          customerName: result.meeting.customerName,
+          meetingLink: result.meeting.meetingLink,
+          meetingDate: result.meeting.date,
+          meetingTime: result.meeting.time,
+          reason: `RESCHEDULED: ${result.meeting.reason}`,
+        }),
+        sendEmailNotification({
+          to: result.meeting.customerEmail,
+          customerName: result.meeting.customerName,
+          meetingLink: result.meeting.meetingLink,
+          meetingDate: result.meeting.date,
+          meetingTime: result.meeting.time,
+          reason: `RESCHEDULED: ${result.meeting.reason}`,
+        }),
+      ]);
+
+      res.json({
+        success: true,
+        meeting: result.meeting,
+        receipts: { sms: smsRes, gmail: emailRes },
+      });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
   // 4. Join meeting room (Amazon Chime SDK WebRTC Credentials)
-  app.post('/api/meetingnext/meetings/:id/join', (req: Request, res: Response) => {
+  app.post('/api/meetingnext/meetings/:id/join', async (req: Request, res: Response) => {
     const meeting = meetingNextBackend.getMeetingById(req.params.id);
     if (!meeting) {
       return res.status(404).json({ error: 'Meeting not found' });
     }
 
+    const session = await createChimeMeetingSession(
+      meeting.id,
+      req.body.userId || 'rm-sarthak-jain'
+    );
+
     res.json({
       success: true,
-      meetingId: meeting.id,
-      chimeMeeting: {
-        MeetingId: `chime-meet-${meeting.id}`,
-        MediaRegion: 'us-east-1',
-        MediaPlacement: {
-          AudioHostUrl: 'audio.chime.us-east-1.amazonaws.com',
-          AudioFallbackUrl: 'audio-fallback.chime.us-east-1.amazonaws.com',
-          SignalingUrl: 'wss://signaling.chime.us-east-1.amazonaws.com',
-          TurnControlUrl: 'turn.chime.us-east-1.amazonaws.com',
-        },
-      },
-      attendee: {
-        AttendeeId: `att-${Date.now()}`,
-        ExternalUserId: req.body.userId || 'rm-sarah-lin',
-        JoinToken: `jwt-${Math.random().toString(36).substring(2, 10)}`,
-      },
+      ...session,
     });
   });
 
-  // 5. Complete meeting & generate AI transcript / summary
-  app.post('/api/meetingnext/meetings/:id/complete', (req: Request, res: Response) => {
+  // ---------------------------------------------------------------------------
+  // Amazon Chime SDK Meetings Dedicated APIs (Section 3 & 5 Requirements)
+  // ---------------------------------------------------------------------------
+
+  // Create or retrieve a Chime meeting (ap-south-1 Mumbai)
+  app.post('/api/chime/meetings', async (req: Request, res: Response) => {
+    try {
+      const user = meetingNextBackend.getCurrentUser();
+      const externalUserId = req.body.externalUserId || user?.id || 'rm_sarthak_jain';
+      const meetingId = req.body.meetingId || `chime_instant_${Date.now()}`;
+
+      const session = await createChimeMeetingSession(meetingId, externalUserId);
+      res.status(201).json({
+        success: true,
+        meetingId,
+        chimeMeeting: session.chimeMeeting,
+        attendee: session.attendee,
+        provider: session.provider,
+        isOrganizer: true,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to create Chime meeting session' });
+    }
+  });
+
+  // Join an existing Chime meeting & generate unique attendee credentials
+  app.post('/api/chime/meetings/:meetingId/join', async (req: Request, res: Response) => {
+    try {
+      const user = meetingNextBackend.getCurrentUser();
+      const meetingId = req.params.meetingId;
+      const externalUserId = req.body.externalUserId || user?.id || `user_${Date.now()}`;
+
+      const session = await createChimeMeetingSession(meetingId, externalUserId);
+      
+      // Update status in backend store if scheduled
+      const scheduled = meetingNextBackend.getMeetingById(meetingId);
+      if (scheduled && scheduled.status === 'upcoming') {
+        scheduled.status = 'in_progress';
+      }
+
+      res.json({
+        success: true,
+        meetingId,
+        chimeMeeting: session.chimeMeeting,
+        attendee: session.attendee,
+        provider: session.provider,
+        isOrganizer: user?.id === 'rm_sarthak_jain',
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to join Chime meeting' });
+    }
+  });
+
+  // Generate unique attendee for an active Chime meeting
+  app.post('/api/chime/meetings/:meetingId/attendees', async (req: Request, res: Response) => {
+    try {
+      const { externalUserId } = req.body;
+      if (!externalUserId) {
+        return res.status(400).json({ error: 'externalUserId is required' });
+      }
+      const attendeeRes = await createChimeAttendee(req.params.meetingId, externalUserId);
+      res.status(201).json(attendeeRes);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to create attendee' });
+    }
+  });
+
+  // Retrieve active Chime meeting details & roster
+  app.get('/api/chime/meetings/:meetingId', async (req: Request, res: Response) => {
+    try {
+      const details = await getChimeMeetingDetails(req.params.meetingId);
+      res.json(details);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to fetch Chime meeting' });
+    }
+  });
+
+  // End / Delete a Chime meeting (ap-south-1)
+  app.delete('/api/chime/meetings/:meetingId', async (req: Request, res: Response) => {
+    try {
+      const meetingId = req.params.meetingId;
+      const result = await deleteChimeMeetingSession(meetingId);
+      
+      // Complete meeting in schedule if applicable
+      meetingNextBackend.completeMeeting(meetingId);
+
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to terminate Chime meeting' });
+    }
+  });
+
+  // 5. Complete meeting & generate AI transcript / summary with Gemini / AWS
+  app.post('/api/meetingnext/meetings/:id/complete', async (req: Request, res: Response) => {
     try {
       const completed = meetingNextBackend.completeMeeting(req.params.id);
       if (!completed) {
         return res.status(404).json({ error: 'Meeting not found' });
       }
-      res.json({ success: true, meeting: completed });
+
+      const aiInsights = await generateAiMeetingInsights(completed);
+      res.json({ success: true, meeting: completed, aiInsights });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -662,21 +811,27 @@ async function startServer() {
   });
 
   // 8. Outbound cellular phone call dispatch (Amazon Chime Voice / Connect PSTN with TRAI 140xx / 1600xx Compliance)
-  app.post('/api/meetingnext/calls/dispatch', (req: Request, res: Response) => {
+  app.post('/api/meetingnext/calls/dispatch', async (req: Request, res: Response) => {
     const { customerNumber, customerName, callPurposeCategory, traiSeries } = req.body;
     if (!customerNumber) {
       return res.status(400).json({ error: 'Customer phone number is required.' });
     }
 
+    const callResult = await initiateOutboundCall({
+      customerNumber,
+      customerName: customerName || 'Direct Dial Customer',
+      callPurposeCategory: callPurposeCategory || 'service_reminder',
+      traiSeries: traiSeries || '1600_service',
+      agentUsername: 'sarthak.jain',
+    });
+
     const isPromotional = traiSeries === '140_promotional' || callPurposeCategory === 'promoting_schemes';
-    const assignedCli = isPromotional ? '140-910-8820' : '1600-200-4810';
     const purposeLabel = 
       callPurposeCategory === 'promoting_schemes' ? 'Promoting New Schemes & Loan Products' :
       callPurposeCategory === 'service_reminder' ? 'Service & KYC Reminder' :
       callPurposeCategory === 'relationship_greeting' ? 'Customer Greetings & Relationship Management' :
       'Outbound Banking Verification Call';
 
-    const cleanNum = customerNumber.replace(/[^\d+]/g, '');
     const callRecord = meetingNextBackend.logCall({
       customerName: customerName || 'Direct Dial Customer',
       customerNumber,
@@ -684,62 +839,57 @@ async function startServer() {
       direction: 'Outbound',
       duration: '0m 00s (Ringing)',
       status: 'Completed',
-      notes: `TRAI Compliant Call via AWS Chime Voice Connector (ap-south-1). Customer received call with authorized bank CLI ${assignedCli}. Employee personal number is masked.`,
-      traiSeries: isPromotional ? '140_promotional' : '1600_service',
-      authorizedCallerId: assignedCli,
+      notes: `TRAI Compliant Call via ${callResult.provider}. Caller ID: ${callResult.assignedAuthorizedCallerId}. RM personal mobile masked.`,
+      traiSeries: (isPromotional ? '140_promotional' : '1600_service') as any,
+      authorizedCallerId: callResult.assignedAuthorizedCallerId,
       callPurposeCategory: callPurposeCategory || (isPromotional ? 'promoting_schemes' : 'service_reminder'),
-      traiComplianceStatus: isPromotional ? 'DND Scrubbed & Verified (140-CLI)' : 'Compliant - Service CLI (1600)',
+      traiComplianceStatus: (isPromotional ? 'DND Scrubbed & Verified (140-CLI)' : 'Compliant - Service CLI (1600)') as any,
       branchEmployeeName: 'Sarthak Jain, CFA (Senior RM)',
       employeePersonalNumberHidden: true,
     });
 
     res.json({
-      success: true,
-      pstnSessionId: `pstn_trai_${Date.now()}`,
-      status: 'ringing',
-      targetNumber: customerNumber,
-      assignedAuthorizedCallerId: assignedCli,
-      traiSeries: isPromotional ? '140xx Promotional' : '1600xx Service / Transactional',
-      employeePersonalNumberMasked: true,
-      provider: 'Amazon Chime SDK Voice Connector (AWS Mumbai ap-south-1)',
+      ...callResult,
       call: callRecord,
-      telUri: `tel:${cleanNum}`,
     });
   });
 
-  // 9. Direct SMS dispatch
-  app.post('/api/meetingnext/dispatch/sms', (req: Request, res: Response) => {
-    const { to, message } = req.body;
-    const msgId = `sms_${Date.now()}`;
-    res.json({
-      success: true,
-      messageId: msgId,
-      status: 'delivered',
-      to,
-      message,
-      timestamp: new Date().toISOString(),
-      provider: 'Amazon SNS / SMS Gateway',
+  // 9. Direct SMS dispatch via AWS SNS
+  app.post('/api/meetingnext/dispatch/sms', async (req: Request, res: Response) => {
+    const { to, message, customerName, meetingLink, meetingDate, meetingTime, reason } = req.body;
+    const smsRes = await sendSmsNotification({
+      to: to || '+91 98200 12345',
+      customerName: customerName || 'Valued Customer',
+      meetingLink: meetingLink || 'https://meetingnext.app',
+      meetingDate: meetingDate || 'Tomorrow',
+      meetingTime: meetingTime || '11:00 AM',
+      reason: reason || 'Banking Service',
     });
+    res.json(smsRes);
   });
 
-  // 10. Direct Gmail dispatch
-  app.post('/api/meetingnext/dispatch/gmail', (req: Request, res: Response) => {
-    const { to, subject, body, meetingLink } = req.body;
-    const msgId = `gmail_${Date.now()}`;
-    res.json({
-      success: true,
-      messageId: msgId,
-      status: 'delivered',
-      to,
-      subject,
-      timestamp: new Date().toISOString(),
-      provider: 'Google Workspace Gmail / SMTP Relay',
+  // 10. Direct Email dispatch via AWS SES
+  app.post('/api/meetingnext/dispatch/gmail', async (req: Request, res: Response) => {
+    const { to, customerName, meetingLink, meetingDate, meetingTime, reason } = req.body;
+    const emailRes = await sendEmailNotification({
+      to: to || 'customer@gmail.com',
+      customerName: customerName || 'Valued Customer',
+      meetingLink: meetingLink || 'https://meetingnext.app',
+      meetingDate: meetingDate || 'Tomorrow',
+      meetingTime: meetingTime || '11:00 AM',
+      reason: reason || 'Banking Consultation',
     });
+    res.json(emailRes);
   });
 
   // 11. AI Meeting transcript & summary
-  app.get('/api/meetingnext/ai/:meetingId', (req: Request, res: Response) => {
-    const details = meetingNextBackend.getAiData(req.params.id);
+  app.get('/api/meetingnext/ai/:meetingId', async (req: Request, res: Response) => {
+    const meeting = meetingNextBackend.getMeetingById(req.params.meetingId);
+    if (meeting) {
+      const aiInsights = await generateAiMeetingInsights(meeting);
+      return res.json(aiInsights);
+    }
+    const details = meetingNextBackend.getAiData(req.params.meetingId);
     if (!details) {
       return res.status(404).json({ error: 'AI details not found' });
     }
@@ -780,15 +930,28 @@ async function startServer() {
 
   // 14. Amazon Connect Customer Outbound Calling Integration
   app.get('/api/connect/config', (_req: Request, res: Response) => {
-    res.json(meetingNextBackend.getAmazonConnectConfig());
+    const baseConfig = meetingNextBackend.getAmazonConnectConfig();
+    res.json({
+      ...baseConfig,
+      awsServiceStatus: getAwsServiceStatus(),
+    });
   });
 
-  app.post('/api/connect/outbound-call', (req: Request, res: Response) => {
+  app.post('/api/connect/outbound-call', async (req: Request, res: Response) => {
     try {
       const { customerNumber, customerName, callPurposeCategory, traiSeries, agentUsername } = req.body;
       if (!customerNumber) {
         return res.status(400).json({ error: 'customerNumber is required' });
       }
+
+      const callResult = await initiateOutboundCall({
+        customerNumber,
+        customerName: customerName || 'Direct Dial Customer',
+        callPurposeCategory: callPurposeCategory || 'service_reminder',
+        traiSeries: traiSeries || '1600_service',
+        agentUsername: agentUsername || 'sarthak.jain',
+      });
+
       const callResponse = meetingNextBackend.initiateAmazonConnectOutboundCall({
         customerNumber,
         customerName: customerName || 'Direct Dial Customer',
@@ -796,7 +959,11 @@ async function startServer() {
         traiSeries: traiSeries || '1600_service',
         agentUsername: agentUsername || 'sarthak.jain',
       });
-      res.status(200).json(callResponse);
+
+      res.status(200).json({
+        ...callResponse,
+        ...callResult,
+      });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

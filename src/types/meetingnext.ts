@@ -39,10 +39,62 @@ export interface ScheduledMeeting {
   sentViaMessage: boolean;
   sentViaGmail: boolean;
   
+  // Amazon Chime SDK Integration properties
+  chimeMeetingId?: string;
+  chimeExternalMeetingId?: string;
+  chimeMeeting?: any;
+
   // For past meetings
   actualDuration?: string; // e.g. "24 mins"
   completedDate?: string;
   hasAiInsights?: boolean;
+}
+
+export interface ChimeMeetingInfo {
+  MeetingId: string;
+  ExternalMeetingId?: string;
+  MediaRegion: string;
+  MediaPlacement?: {
+    AudioHostUrl?: string;
+    AudioFallbackUrl?: string;
+    SignalingUrl?: string;
+    TurnControlUrl?: string;
+    ScreenDataUrl?: string;
+    ScreenViewingUrl?: string;
+    ScreenSharingUrl?: string;
+    EventIngestionUrl?: string;
+  };
+}
+
+export interface ChimeAttendeeInfo {
+  AttendeeId: string;
+  ExternalUserId: string;
+  JoinToken: string;
+}
+
+export interface ChimeJoinSessionResponse {
+  success: boolean;
+  meetingId: string;
+  chimeMeeting: ChimeMeetingInfo;
+  attendee: ChimeAttendeeInfo;
+  provider: string;
+  isOrganizer: boolean;
+}
+
+export interface ChimeDeviceOption {
+  deviceId: string;
+  label: string;
+  groupId?: string;
+}
+
+export interface ChimeRosterParticipant {
+  attendeeId: string;
+  name: string;
+  isLocal: boolean;
+  muted: boolean;
+  videoEnabled: boolean;
+  isContentShare?: boolean;
+  signalStrength?: number;
 }
 
 export interface MeetingAiDetails {
