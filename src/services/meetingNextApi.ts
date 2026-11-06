@@ -181,6 +181,19 @@ class MeetingNextApiService {
     }
   }
 
+  // 1b. Fetch single meeting by ID
+  async getMeeting(id: string): Promise<ScheduledMeeting | null> {
+    try {
+      const response = await apiClient.get<{ meeting: ScheduledMeeting }>(
+        `/api/meetingnext/meetings/${encodeURIComponent(id)}`
+      );
+      return response.data?.meeting || null;
+    } catch (e) {
+      console.warn(`Failed to fetch meeting ${id}:`, e);
+      return null;
+    }
+  }
+
   // 2. Schedule meeting with automatic SMS & Gmail dispatch
   async scheduleMeeting(payload: SchedulePayload): Promise<{
     meeting: ScheduledMeeting;

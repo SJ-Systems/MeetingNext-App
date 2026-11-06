@@ -1,6 +1,36 @@
 {
   "upcomingMeetings": [
     {
+      "id": "mtg-room-zoom-google-demo",
+      "customerName": "Customer Attendee",
+      "customerNumber": "+1 (415) 890-4412",
+      "customerEmail": "customer@client.com",
+      "reason": "Banking Video Consultation",
+      "date": "Today",
+      "time": "Immediate Consultation",
+      "durationMinutes": 30,
+      "meetingLink": "/room/mtg-room-zoom-google-demo",
+      "status": "in_progress",
+      "sentViaMessage": true,
+      "sentViaGmail": true,
+      "chimeMeetingId": "chime-meet-mtg-room-zoom-google-demo",
+      "chimeExternalMeetingId": "mtg-room-zoom-google-demo",
+      "chimeMeeting": {
+        "MeetingId": "chime-meet-mtg-room-zoom-google-demo",
+        "ExternalMeetingId": "mtg-room-zoom-google-demo",
+        "MediaRegion": "ap-south-1",
+        "MediaPlacement": {
+          "AudioHostUrl": "audio.chime.ap-south-1.amazonaws.com",
+          "AudioFallbackUrl": "audio-fallback.chime.ap-south-1.amazonaws.com",
+          "SignalingUrl": "wss://signaling.chime.ap-south-1.amazonaws.com",
+          "TurnControlUrl": "turn.chime.ap-south-1.amazonaws.com",
+          "ScreenDataUrl": "screendata.chime.ap-south-1.amazonaws.com",
+          "ScreenViewingUrl": "screenviewing.chime.ap-south-1.amazonaws.com",
+          "ScreenSharingUrl": "screensharing.chime.ap-south-1.amazonaws.com"
+        }
+      }
+    },
+    {
       "id": "mtg-test-room-101",
       "customerName": "Customer Attendee",
       "customerNumber": "+1 (415) 890-4412",
@@ -258,5 +288,5 @@
       }
     }
   },
-  "updatedAt": "2026-11-06T08:23:43.387Z"
+  "updatedAt": "2026-11-06T08:57:53.243Z"
 }

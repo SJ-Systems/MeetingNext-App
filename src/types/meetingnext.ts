@@ -38,6 +38,8 @@ export interface ScheduledMeeting {
   status: 'upcoming' | 'in_progress' | 'completed' | 'cancelled';
   sentViaMessage: boolean;
   sentViaGmail: boolean;
+  organizerId?: string;
+  organizerName?: string;
   
   // Amazon Chime SDK Integration properties
   chimeMeetingId?: string;

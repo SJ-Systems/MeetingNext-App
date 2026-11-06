@@ -75,7 +75,7 @@ interface TranscriptItem {
 interface MeetingRoomModalProps {
   meeting: ScheduledMeeting;
   isOpen: boolean;
-  currentUser?: { id: string; name: string; role?: string } | null;
+  currentUser?: { id: string; name: string; role?: string; email?: string } | null;
   onLeaveMeeting: () => void;
   onCompleteMeeting?: (meetingId: string) => void;
 }
@@ -87,14 +87,21 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
   onLeaveMeeting,
   onCompleteMeeting,
 }) => {
-  // Local Participant Identity
+  // Local Participant Identity: Only Sarthak Jain (Host) has host privileges!
+  const isLocalHost = Boolean(
+    currentUser &&
+    (currentUser.id === 'rm_sarthak_jain' ||
+     currentUser.id === 'rm-sarthak-jain' ||
+     currentUser.email === 'sarthak.jain@businessnext.com' ||
+     (currentUser.role && currentUser.role.toLowerCase().includes('senior relationship manager')))
+  );
+
   const localParticipantId = useRef<string>(
-    currentUser?.id || `user_${Math.random().toString(36).substring(2, 9)}`
+    currentUser?.id || `att_${Math.random().toString(36).substring(2, 9)}`
   ).current;
 
-  const localDisplayName = currentUser?.name || 'Sarthak Jain, CFA';
-  const localRole = currentUser?.role || 'Senior Relationship Manager';
-  const isLocalHost = !currentUser || currentUser.id.includes('rm') || currentUser.name.includes('Sarthak');
+  const localDisplayName = currentUser?.name || (isLocalHost ? 'Sarthak Jain, CFA' : 'Guest Attendee');
+  const localRole = isLocalHost ? 'Host · Senior RM' : (currentUser?.role || 'Attendee');
 
   // Local Media Streams & Controls
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);

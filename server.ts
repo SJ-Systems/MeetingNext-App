@@ -634,6 +634,17 @@ async function startServer() {
     }
   });
 
+  // 2b. Retrieve meeting details by ID
+  app.get('/api/meetingnext/meetings/:id', (req: Request, res: Response) => {
+    try {
+      const meeting = meetingNextBackend.getMeetingById(req.params.id) ||
+        meetingNextBackend.getOrCreateScheduledMeeting(req.params.id);
+      res.json({ meeting });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // 3. Update / Reschedule meeting details
   app.put('/api/meetingnext/meetings/:id', async (req: Request, res: Response) => {
     try {

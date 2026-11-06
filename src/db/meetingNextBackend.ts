@@ -348,6 +348,8 @@ class MeetingNextBackendStore {
       status: 'upcoming',
       sentViaMessage: true,
       sentViaGmail: true,
+      organizerId: defaultInfo?.organizerId || 'rm_sarthak_jain',
+      organizerName: defaultInfo?.organizerName || 'Sarthak Jain, CFA',
       ...defaultInfo,
     };
 
@@ -398,6 +400,8 @@ class MeetingNextBackendStore {
       status: 'upcoming',
       sentViaMessage: true,
       sentViaGmail: true,
+      organizerId: 'rm_sarthak_jain',
+      organizerName: 'Sarthak Jain, CFA',
     };
 
     this.upcomingMeetings.unshift(newMeeting);
