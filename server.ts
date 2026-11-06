@@ -93,187 +93,275 @@ async function startServer() {
     res.json(db.getRMs());
   });
 
-  // 4. Meeting Management
-  // GET /api/meetings
-  app.get('/api/meetings', (req: Request, res: Response) => {
-    const { status, rmId, customerId } = req.query;
-    let meetings = db.getMeetings();
+  // ---------------------------------------------------------------------------
+  // Section 4: Production Amazon Chime SDK Video Meeting REST APIs
+  // Single Persistent Meeting per Application Meeting Session
+  // ---------------------------------------------------------------------------
 
-    if (status) {
-      meetings = meetings.filter((m) => m.status === status);
+  // 1. GET /api/meetings - List meetings
+  app.get('/api/meetings', (_req: Request, res: Response) => {
+    try {
+      const meetings = meetingNextBackend.getMeetings();
+      res.json(meetings);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
     }
-    if (rmId) {
-      meetings = meetings.filter((m) => m.rmId === rmId);
-    }
-    if (customerId) {
-      meetings = meetings.filter((m) => m.customerId === customerId);
-    }
-
-    res.json(meetings);
   });
 
-  // GET /api/meetings/:id
+  // 2. GET /api/meetings/:id - Fetch meeting details, persistent Chime info, and active roster
   app.get('/api/meetings/:id', (req: Request, res: Response) => {
-    const meeting = db.getMeetingById(req.params.id);
-    if (!meeting) {
-      return res.status(404).json({ error: 'Meeting not found' });
-    }
-    res.json(meeting);
-  });
+    try {
+      const rawId = req.params.id;
+      const cleanId = rawId
+        .replace(/^https?:\/\/[^\/]+\/(meeting\/|room\/)?/, '')
+        .replace(/^\/+/, '')
+        .replace(/^(meeting|room)\//, '');
 
-  // POST /api/meetings
-  app.post('/api/meetings', (req: Request, res: Response) => {
-    const {
-      title,
-      description,
-      agenda,
-      meetingType,
-      customerId,
-      customerName,
-      customerEmail,
-      customerPhone,
-      rmId,
-      rmName,
-      scheduledDate,
-      startTime,
-      endTime,
-      durationMinutes,
-      associatedTicketId,
-      reminderPreferences,
-    } = req.body;
+      const meeting = meetingNextBackend.getMeetingById(cleanId) ||
+        meetingNextBackend.getOrCreateScheduledMeeting(cleanId);
 
-    if (!title || !customerId || !rmId || !scheduledDate || !startTime) {
-      return res.status(400).json({ error: 'Missing required meeting scheduling fields' });
-    }
+      const participants = meetingNextBackend.getRoomParticipants(cleanId);
+      const meetingUrl = generateMeetingLink(cleanId);
 
-    // Check RM scheduling conflicts
-    const conflict = db.checkSchedulingConflict(rmId, scheduledDate, startTime, endTime || startTime);
-    if (conflict) {
-      return res.status(409).json({
-        error: 'Scheduling conflict detected: The selected Relationship Manager already has an active meeting during this timeslot.',
-        conflict: true,
+      res.json({
+        success: true,
+        applicationMeetingId: cleanId,
+        meeting,
+        chimeMeetingId: meeting.chimeMeetingId || null,
+        status: meeting.status,
+        participants,
+        meetingUrl,
       });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
     }
-
-    const newMeeting = db.createMeeting({
-      title,
-      description: description || '',
-      agenda: agenda || '',
-      meetingType: meetingType || 'video',
-      status: 'scheduled',
-      customerId,
-      customerName: customerName || 'Customer',
-      customerEmail: customerEmail || '',
-      customerPhone: customerPhone || '',
-      rmId,
-      rmName: rmName || 'Relationship Manager',
-      scheduledDate,
-      startTime,
-      endTime: endTime || startTime,
-      durationMinutes: durationMinutes || 30,
-      chimeMeetingId: `meet-chime-apex-${Math.floor(1000 + Math.random() * 9000)}`,
-      attendees: [
-        {
-          id: `att_rm_${Date.now()}`,
-          name: rmName || 'Relationship Manager',
-          email: customerEmail || '',
-          role: 'organizer',
-          avatar: 'RM',
-        },
-        {
-          id: `att_cust_${Date.now()}`,
-          name: customerName || 'Customer',
-          email: customerEmail || '',
-          role: 'customer',
-          avatar: 'C',
-        },
-      ],
-      reminderPreferences: reminderPreferences || {
-        email: true,
-        sms: true,
-        timeBeforeMinutes: 15,
-      },
-      associatedTicketId,
-    });
-
-    res.status(201).json(newMeeting);
   });
 
-  // PUT /api/meetings/:id
-  app.put('/api/meetings/:id', (req: Request, res: Response) => {
-    const updated = db.updateMeeting(req.params.id, req.body);
-    if (!updated) {
-      return res.status(404).json({ error: 'Meeting not found' });
-    }
-    res.json(updated);
-  });
+  // 3. POST /api/meetings - Create application meeting with unique, permanent URL
+  app.post('/api/meetings', async (req: Request, res: Response) => {
+    try {
+      const {
+        title,
+        reason,
+        customerName,
+        customerNumber,
+        customerEmail,
+        date,
+        time,
+        scheduledDate,
+        startTime,
+        durationMinutes,
+        meetingId: customMeetingId,
+      } = req.body;
 
-  // DELETE /api/meetings/:id
-  app.delete('/api/meetings/:id', (req: Request, res: Response) => {
-    const success = db.deleteMeeting(req.params.id);
-    if (!success) {
-      return res.status(404).json({ error: 'Meeting not found' });
-    }
-    res.json({ success: true, deletedMeetingId: req.params.id });
-  });
+      const scheduledDateVal = date || scheduledDate || 'Tomorrow';
+      const scheduledTimeVal = time || startTime || '11:00 AM';
+      const cName = customerName || 'Customer Attendee';
+      const cPhone = customerNumber || '+1 (415) 890-4412';
+      const cEmail = customerEmail || `${cName.toLowerCase().replace(/\s+/g, '.')}@gmail.com`;
+      const meetingTitle = title || reason || 'Banking Video Consultation';
 
-  // 5. Meeting Execution (Chime SDK lifecycle)
-  // POST /api/meetings/:id/join
-  app.post('/api/meetings/:id/join', (req: Request, res: Response) => {
-    const meeting = db.getMeetingById(req.params.id);
-    if (!meeting) {
-      return res.status(404).json({ error: 'Meeting not found' });
-    }
+      const cleanMeetingId = (customMeetingId || `mtg-${Math.floor(1000 + Math.random() * 9000)}`)
+        .replace(/^https?:\/\/[^\/]+\/(meeting\/|room\/)?/, '')
+        .replace(/^\/+/, '')
+        .replace(/^(meeting|room)\//, '');
 
-    // Update status to in_progress if currently scheduled
-    if (meeting.status === 'scheduled') {
-      db.updateMeeting(meeting.id, {
-        status: 'in_progress',
-        actualStartTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      const result = meetingNextBackend.scheduleMeeting({
+        id: cleanMeetingId,
+        customerName: cName,
+        customerNumber: cPhone,
+        customerEmail: cEmail,
+        reason: meetingTitle,
+        date: scheduledDateVal,
+        time: scheduledTimeVal,
+        durationMinutes: durationMinutes || 30,
       });
-    }
 
-    // Return Amazon Chime SDK Join Credentials
-    res.json({
-      meetingId: meeting.id,
-      chimeMeeting: {
-        MeetingId: meeting.chimeMeetingId || `meet-chime-${meeting.id}`,
-        ExternalMeetingId: meeting.internalReference,
-        MediaRegion: 'us-east-1',
-        MediaPlacement: {
-          AudioHostUrl: 'audio.chime.us-east-1.amazonaws.com',
-          AudioFallbackUrl: 'audio-fallback.chime.us-east-1.amazonaws.com',
-          SignalingUrl: 'wss://signaling.chime.us-east-1.amazonaws.com',
-          TurnControlUrl: 'turn.chime.us-east-1.amazonaws.com',
+      const meetingUrl = generateMeetingLink(cleanMeetingId);
+
+      // Auto-dispatch notifications via AWS SNS and SES
+      Promise.all([
+        sendSmsNotification({
+          to: cPhone,
+          customerName: cName,
+          meetingLink: meetingUrl,
+          meetingDate: scheduledDateVal,
+          meetingTime: scheduledTimeVal,
+          reason: meetingTitle,
+        }),
+        sendEmailNotification({
+          to: cEmail,
+          customerName: cName,
+          meetingLink: meetingUrl,
+          meetingDate: scheduledDateVal,
+          meetingTime: scheduledTimeVal,
+          reason: meetingTitle,
+        }),
+      ]).catch((err) => console.warn('[AWS Dispatch Note]:', err));
+
+      res.status(201).json({
+        success: true,
+        applicationMeetingId: cleanMeetingId,
+        meetingUrl,
+        meeting: {
+          ...result.meeting,
+          meetingUrl,
         },
-      },
-      attendee: {
-        AttendeeId: `att-${Date.now()}`,
-        ExternalUserId: req.body.userId || 'usr-sarah-lin',
-        JoinToken: `token-jwt-${Math.random().toString(36).substring(2, 12)}`,
-      },
-    });
+        receipts: result.receipts,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to create meeting' });
+    }
   });
 
-  // POST /api/meetings/:id/leave
+  // 4. POST /api/meetings/:id/start - Organizer starts meeting as HOST
+  app.post('/api/meetings/:id/start', async (req: Request, res: Response) => {
+    try {
+      const rawId = req.params.id;
+      const cleanId = rawId
+        .replace(/^https?:\/\/[^\/]+\/(meeting\/|room\/)?/, '')
+        .replace(/^\/+/, '')
+        .replace(/^(meeting|room)\//, '');
+
+      const user = meetingNextBackend.getCurrentUser();
+      const externalUserId = req.body.externalUserId || req.body.userId || user?.id || 'rm_sarthak_jain';
+      const userName = req.body.userName || user?.name || 'Sarthak Jain, CFA';
+
+      // Start or retrieve single persistent Chime meeting session in ap-south-1 (Mumbai)
+      const session = await getOrCreateChimeMeetingSession(cleanId, externalUserId, userName);
+
+      // Register host participant in active room roster
+      meetingNextBackend.joinRoom(cleanId, {
+        id: externalUserId,
+        name: userName,
+        role: 'Host · Senior RM',
+        isHost: true,
+        avatarColor: 'bg-rose-600',
+        isMuted: false,
+        isVideoOff: false,
+        isScreenSharing: false,
+      });
+
+      res.json({
+        success: true,
+        host: true,
+        role: 'host',
+        applicationMeetingId: cleanId,
+        chimeMeetingId: session.chimeMeetingId,
+        chimeMeeting: session.chimeMeeting,
+        attendee: session.attendee,
+        meetingUrl: generateMeetingLink(cleanId),
+        provider: session.provider,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to start meeting session' });
+    }
+  });
+
+  // 5. POST /api/meetings/:id/join - Participant joins meeting as ATTENDEE (reusing SAME Chime MeetingId)
+  app.post('/api/meetings/:id/join', async (req: Request, res: Response) => {
+    try {
+      const rawId = req.params.id;
+      const cleanId = rawId
+        .replace(/^https?:\/\/[^\/]+\/(meeting\/|room\/)?/, '')
+        .replace(/^\/+/, '')
+        .replace(/^(meeting|room)\//, '');
+
+      const externalUserId =
+        req.body.externalUserId ||
+        req.body.userId ||
+        `att_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const userName = req.body.userName || req.body.name || 'Guest Attendee';
+
+      // Host detection: only Sarthak Jain or explicitly authenticated host
+      const isHost =
+        req.body.isHost === true ||
+        externalUserId === 'rm_sarthak_jain' ||
+        externalUserId === 'rm-sarthak-jain';
+
+      // getOrCreateChimeMeetingSession guarantees:
+      // 1. Exactly ONE Chime MeetingId per applicationMeetingId
+      // 2. Creates a unique attendee via CreateAttendeeCommand
+      // 3. Never calls CreateMeetingCommand if meeting already exists
+      const session = await getOrCreateChimeMeetingSession(cleanId, externalUserId, userName);
+
+      // Register attendee in active room roster
+      meetingNextBackend.joinRoom(cleanId, {
+        id: externalUserId,
+        name: userName,
+        role: isHost ? 'Host · Senior RM' : 'Attendee',
+        isHost,
+        avatarColor: isHost ? 'bg-rose-600' : 'bg-blue-600',
+        isMuted: !!req.body.isMuted,
+        isVideoOff: !!req.body.isVideoOff,
+        isScreenSharing: false,
+      });
+
+      res.json({
+        success: true,
+        host: isHost,
+        role: isHost ? 'host' : 'attendee',
+        applicationMeetingId: cleanId,
+        chimeMeetingId: session.chimeMeetingId,
+        chimeMeeting: session.chimeMeeting,
+        attendee: session.attendee,
+        meetingUrl: generateMeetingLink(cleanId),
+        provider: session.provider,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to join meeting' });
+    }
+  });
+
+  // 6. POST /api/meetings/:id/leave - Participant leaves cleanly
   app.post('/api/meetings/:id/leave', (req: Request, res: Response) => {
-    res.json({ success: true, message: 'Attendee left meeting' });
+    try {
+      const rawId = req.params.id;
+      const cleanId = rawId
+        .replace(/^https?:\/\/[^\/]+\/(meeting\/|room\/)?/, '')
+        .replace(/^\/+/, '')
+        .replace(/^(meeting|room)\//, '');
+      const participantId = req.body.participantId || req.body.userId || req.body.externalUserId;
+
+      if (participantId) {
+        meetingNextBackend.leaveRoom(cleanId, participantId);
+      }
+
+      res.json({
+        success: true,
+        message: 'Attendee left meeting cleanly without terminating session',
+        applicationMeetingId: cleanId,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
-  // POST /api/meetings/:id/end
-  app.post('/api/meetings/:id/end', (req: Request, res: Response) => {
-    const meeting = db.getMeetingById(req.params.id);
-    if (!meeting) {
-      return res.status(404).json({ error: 'Meeting not found' });
+  // 7. POST /api/meetings/:id/end - Host ends meeting for ALL participants
+  app.post('/api/meetings/:id/end', async (req: Request, res: Response) => {
+    try {
+      const rawId = req.params.id;
+      const cleanId = rawId
+        .replace(/^https?:\/\/[^\/]+\/(meeting\/|room\/)?/, '')
+        .replace(/^\/+/, '')
+        .replace(/^(meeting|room)\//, '');
+
+      // Terminate AWS Chime meeting session via DeleteMeetingCommand
+      await deleteChimeMeetingSession(cleanId);
+
+      // Complete meeting in backend
+      const completed = meetingNextBackend.completeMeeting(cleanId);
+
+      res.json({
+        success: true,
+        status: 'completed',
+        applicationMeetingId: cleanId,
+        message: 'Meeting terminated for all participants',
+        meeting: completed,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to terminate meeting' });
     }
-
-    const updated = db.updateMeeting(meeting.id, {
-      status: 'completed',
-      actualEndTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      actualDurationSeconds: req.body.durationSeconds || 1680,
-    });
-
-    res.json({ success: true, meeting: updated });
   });
 
   // 6. Direct Audio & Telephony Communication

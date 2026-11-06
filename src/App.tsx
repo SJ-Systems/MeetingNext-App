@@ -117,10 +117,12 @@ export default function App() {
     const checkUrlForMeetingRoom = () => {
       const pathname = window.location.pathname;
       const searchParams = new URLSearchParams(window.location.search);
-      let targetRoomId: string | null = searchParams.get('room');
+      let targetRoomId: string | null = searchParams.get('room') || searchParams.get('meeting');
 
       if (!targetRoomId && pathname.startsWith('/room/')) {
         targetRoomId = pathname.substring(6).replace(/\/$/, '');
+      } else if (!targetRoomId && pathname.startsWith('/meeting/')) {
+        targetRoomId = pathname.substring(9).replace(/\/$/, '');
       }
 
       if (targetRoomId) {

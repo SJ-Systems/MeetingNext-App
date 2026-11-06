@@ -276,8 +276,8 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
       }
     });
 
-    // Initialize Amazon Chime SDK Single Persistent Meeting Session
-    meetingNextApi.joinChimeMeeting(meeting.id, localParticipantId).then(async (joinRes) => {
+    // Initialize Amazon Chime SDK Single Persistent Meeting Session (Host or Attendee)
+    meetingNextApi.joinChimeMeeting(meeting.id, localParticipantId, isLocalHost).then(async (joinRes) => {
       if (!active || !joinRes) return;
       setChimeSessionData({
         applicationMeetingId: joinRes.applicationMeetingId || meeting.id,
@@ -625,7 +625,8 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
     if (speechEngineRef.current) {
       speechEngineRef.current.stop();
     }
-    meetingNextApi.leaveRoomParticipant(meeting.id, localParticipantId);
+    meetingNextApi.leaveMeeting(meeting.id, localParticipantId);
+    meetingNextApi.endMeeting(meeting.id);
     if (onCompleteMeeting) {
       onCompleteMeeting(meeting.id);
     }
@@ -643,7 +644,7 @@ export const MeetingRoomModal: React.FC<MeetingRoomModalProps> = ({
     if (speechEngineRef.current) {
       speechEngineRef.current.stop();
     }
-    meetingNextApi.leaveRoomParticipant(meeting.id, localParticipantId);
+    meetingNextApi.leaveMeeting(meeting.id, localParticipantId);
     onLeaveMeeting();
   };
 

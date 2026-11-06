@@ -15,12 +15,6 @@ export function getAppBaseUrl(): string {
   // 1. Browser runtime: dynamically use current window origin so link sharing always matches actual host
   if (typeof window !== 'undefined' && window.location?.origin) {
     const hostname = window.location.hostname;
-    // In AI Studio internal dev container (ais-dev-*), convert to public shared preview (ais-pre-*)
-    // so external devices/participants can join directly without Google 403 applet-auth-bridge error
-    if (hostname.startsWith('ais-dev-')) {
-      return window.location.origin.replace('ais-dev-', 'ais-pre-');
-    }
-    // Localhost, Vercel, or custom domains: return the exact working origin
     if (hostname !== '') {
       return window.location.origin;
     }
@@ -55,7 +49,13 @@ export function getAppBaseUrl(): string {
  */
 export function generateMeetingLink(roomId: string): string {
   const base = getAppBaseUrl();
-  const cleanId = roomId.replace(/^https?:\/\/[^\/]+\/(room\/)?/, '').replace(/^\/+/, '');
-  const finalRoomId = cleanId.startsWith('room/') ? cleanId.substring(5) : cleanId;
-  return base ? `${base}/room/${finalRoomId}` : `/room/${finalRoomId}`;
+  const cleanId = roomId
+    .replace(/^https?:\/\/[^\/]+\/(meeting\/|room\/)?/, '')
+    .replace(/^\/+/, '');
+  const finalRoomId = cleanId.startsWith('meeting/')
+    ? cleanId.substring(8)
+    : cleanId.startsWith('room/')
+    ? cleanId.substring(5)
+    : cleanId;
+  return base ? `${base}/meeting/${finalRoomId}` : `/meeting/${finalRoomId}`;
 }

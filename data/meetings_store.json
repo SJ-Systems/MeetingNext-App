@@ -1,6 +1,70 @@
 {
   "upcomingMeetings": [
     {
+      "id": "mtg-concurrent-7715",
+      "customerName": "Customer Attendee",
+      "customerNumber": "+1 (415) 890-4412",
+      "customerEmail": "customer@client.com",
+      "reason": "Banking Video Consultation",
+      "date": "Today",
+      "time": "Immediate Consultation",
+      "durationMinutes": 30,
+      "meetingLink": "/meeting/mtg-concurrent-7715",
+      "status": "in_progress",
+      "sentViaMessage": true,
+      "sentViaGmail": true,
+      "organizerId": "rm_sarthak_jain",
+      "organizerName": "Sarthak Jain, CFA",
+      "chimeMeetingId": "chime-meet-mtg-concurrent-7715",
+      "chimeExternalMeetingId": "mtg-concurrent-7715",
+      "chimeMeeting": {
+        "MeetingId": "chime-meet-mtg-concurrent-7715",
+        "ExternalMeetingId": "mtg-concurrent-7715",
+        "MediaRegion": "ap-south-1",
+        "MediaPlacement": {
+          "AudioHostUrl": "audio.chime.ap-south-1.amazonaws.com",
+          "AudioFallbackUrl": "audio-fallback.chime.ap-south-1.amazonaws.com",
+          "SignalingUrl": "wss://signaling.chime.ap-south-1.amazonaws.com",
+          "TurnControlUrl": "turn.chime.ap-south-1.amazonaws.com",
+          "ScreenDataUrl": "screendata.chime.ap-south-1.amazonaws.com",
+          "ScreenViewingUrl": "screenviewing.chime.ap-south-1.amazonaws.com",
+          "ScreenSharingUrl": "screensharing.chime.ap-south-1.amazonaws.com"
+        }
+      }
+    },
+    {
+      "id": "mtg-concurrent-6666",
+      "customerName": "Customer Attendee",
+      "customerNumber": "+1 (415) 890-4412",
+      "customerEmail": "customer@client.com",
+      "reason": "Banking Video Consultation",
+      "date": "Today",
+      "time": "Immediate Consultation",
+      "durationMinutes": 30,
+      "meetingLink": "/meeting/mtg-concurrent-6666",
+      "status": "in_progress",
+      "sentViaMessage": true,
+      "sentViaGmail": true,
+      "organizerId": "rm_sarthak_jain",
+      "organizerName": "Sarthak Jain, CFA",
+      "chimeMeetingId": "chime-meet-mtg-concurrent-6666",
+      "chimeExternalMeetingId": "mtg-concurrent-6666",
+      "chimeMeeting": {
+        "MeetingId": "chime-meet-mtg-concurrent-6666",
+        "ExternalMeetingId": "mtg-concurrent-6666",
+        "MediaRegion": "ap-south-1",
+        "MediaPlacement": {
+          "AudioHostUrl": "audio.chime.ap-south-1.amazonaws.com",
+          "AudioFallbackUrl": "audio-fallback.chime.ap-south-1.amazonaws.com",
+          "SignalingUrl": "wss://signaling.chime.ap-south-1.amazonaws.com",
+          "TurnControlUrl": "turn.chime.ap-south-1.amazonaws.com",
+          "ScreenDataUrl": "screendata.chime.ap-south-1.amazonaws.com",
+          "ScreenViewingUrl": "screenviewing.chime.ap-south-1.amazonaws.com",
+          "ScreenSharingUrl": "screensharing.chime.ap-south-1.amazonaws.com"
+        }
+      }
+    },
+    {
       "id": "mtg-room-zoom-google-demo",
       "customerName": "Customer Attendee",
       "customerNumber": "+1 (415) 890-4412",
@@ -104,6 +168,44 @@
     }
   ],
   "pastMeetings": [
+    {
+      "id": "mtg-chime-test-8860",
+      "customerName": "Ananya Sharma",
+      "customerNumber": "+91 98200 44123",
+      "customerEmail": "ananya.sharma@investments.in",
+      "reason": "High-Value Commercial Lending Review",
+      "date": "Today",
+      "time": "2:30 PM",
+      "durationMinutes": 45,
+      "meetingLink": "/meeting/mtg-chime-test-8860",
+      "status": "completed",
+      "sentViaMessage": true,
+      "sentViaGmail": true,
+      "organizerId": "rm_sarthak_jain",
+      "organizerName": "Sarthak Jain, CFA",
+      "chimeExternalMeetingId": "mtg-chime-test-8860",
+      "chimeMeeting": null,
+      "actualDuration": "28 mins"
+    },
+    {
+      "id": "mtg-chime-test-5196",
+      "customerName": "Ananya Sharma",
+      "customerNumber": "+91 98200 44123",
+      "customerEmail": "ananya.sharma@investments.in",
+      "reason": "High-Value Commercial Lending Review",
+      "date": "Today",
+      "time": "2:30 PM",
+      "durationMinutes": 45,
+      "meetingLink": "/meeting/mtg-chime-test-5196",
+      "status": "completed",
+      "sentViaMessage": true,
+      "sentViaGmail": true,
+      "organizerId": "rm_sarthak_jain",
+      "organizerName": "Sarthak Jain, CFA",
+      "chimeExternalMeetingId": "mtg-chime-test-5196",
+      "chimeMeeting": null,
+      "actualDuration": "28 mins"
+    },
     {
       "id": "mtg_past_01",
       "customerName": "Marcus Vance",
@@ -286,7 +388,85 @@
         ],
         "sentimentScore": "92% Positive"
       }
+    },
+    "mtg-chime-test-5196": {
+      "meetingId": "mtg-chime-test-5196",
+      "customerName": "Ananya Sharma",
+      "reason": "High-Value Commercial Lending Review",
+      "date": "Today",
+      "transcription": [
+        {
+          "speaker": "Relationship Manager",
+          "time": "00:04",
+          "text": "Hello Ananya Sharma, starting your session for High-Value Commercial Lending Review."
+        },
+        {
+          "speaker": "Ananya Sharma",
+          "time": "00:18",
+          "text": "Thanks Sarthak, all documents have been submitted."
+        },
+        {
+          "speaker": "Relationship Manager",
+          "time": "00:35",
+          "text": "Verified successfully. Account credentials will be issued."
+        }
+      ],
+      "aiSummary": {
+        "overview": "Successfully completed verification consultation for Ananya Sharma. Identity documents checked against banking regulatory requirements.",
+        "keyPoints": [
+          "Cleared verification requirements for High-Value Commercial Lending Review.",
+          "Customer validated biometric facial matching in Amazon Chime video room."
+        ],
+        "customerIntent": "Complete High-Value Commercial Lending Review with priority banking turnaround.",
+        "actionItems": [
+          {
+            "task": "Issue confirmation docket to Ananya Sharma",
+            "assignedTo": "Sarthak Jain, CFA",
+            "dueDate": "Today"
+          }
+        ],
+        "sentimentScore": "96% Positive (Delighted)"
+      }
+    },
+    "mtg-chime-test-8860": {
+      "meetingId": "mtg-chime-test-8860",
+      "customerName": "Ananya Sharma",
+      "reason": "High-Value Commercial Lending Review",
+      "date": "Today",
+      "transcription": [
+        {
+          "speaker": "Relationship Manager",
+          "time": "00:04",
+          "text": "Hello Ananya Sharma, starting your session for High-Value Commercial Lending Review."
+        },
+        {
+          "speaker": "Ananya Sharma",
+          "time": "00:18",
+          "text": "Thanks Sarthak, all documents have been submitted."
+        },
+        {
+          "speaker": "Relationship Manager",
+          "time": "00:35",
+          "text": "Verified successfully. Account credentials will be issued."
+        }
+      ],
+      "aiSummary": {
+        "overview": "Successfully completed verification consultation for Ananya Sharma. Identity documents checked against banking regulatory requirements.",
+        "keyPoints": [
+          "Cleared verification requirements for High-Value Commercial Lending Review.",
+          "Customer validated biometric facial matching in Amazon Chime video room."
+        ],
+        "customerIntent": "Complete High-Value Commercial Lending Review with priority banking turnaround.",
+        "actionItems": [
+          {
+            "task": "Issue confirmation docket to Ananya Sharma",
+            "assignedTo": "Sarthak Jain, CFA",
+            "dueDate": "Today"
+          }
+        ],
+        "sentimentScore": "96% Positive (Delighted)"
+      }
     }
   },
-  "updatedAt": "2026-11-06T08:57:53.243Z"
+  "updatedAt": "2026-11-06T09:25:35.851Z"
 }
